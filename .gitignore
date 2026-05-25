@@ -26,6 +26,7 @@ build/
 
 # Demo data and model artifacts that should not be committed accidentally
 data/generated/
+data/cache/
 models/
 checkpoints/
 *.ckpt
