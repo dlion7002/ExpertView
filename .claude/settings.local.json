@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"C:\\\\Users\\\\jacob\\\\.claude\\\\skills\\\\implement\")",
+      "WebFetch(domain:www.aitmpl.com)",
+      "WebFetch(domain:skillsmp.com)",
+      "WebFetch(domain:www.skillhub.club)",
+      "WebFetch(domain:www.skills.sh)",
+      "WebSearch",
+      "Bash(ls -la \"/c/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView/\" && echo \"---\" && ls \"/c/Users/jacob/.claude/projects/c--AAMisArchivos-AAprogramming-AI-Sysems-ExpertView/memory/\" 2>&1 || echo \"memory dir does not exist\")",
+      "Read(//c/Users/jacob/.claude/projects/c--AAMisArchivos-AAprogramming-AI-Sysems-ExpertView/memory//**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\jacob\\.claude\\skills"
+    ]
+  }
+}
