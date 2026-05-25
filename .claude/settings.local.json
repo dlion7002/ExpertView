@@ -8,7 +8,22 @@
       "WebFetch(domain:www.skills.sh)",
       "WebSearch",
       "Bash(ls -la \"/c/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView/\" && echo \"---\" && ls \"/c/Users/jacob/.claude/projects/c--AAMisArchivos-AAprogramming-AI-Sysems-ExpertView/memory/\" 2>&1 || echo \"memory dir does not exist\")",
-      "Read(//c/Users/jacob/.claude/projects/c--AAMisArchivos-AAprogramming-AI-Sysems-ExpertView/memory//**)"
+      "Read(//c/Users/jacob/.claude/projects/c--AAMisArchivos-AAprogramming-AI-Sysems-ExpertView/memory//**)",
+      "Bash(uv --version)",
+      "Bash(git switch *)",
+      "Bash(uv sync *)",
+      "Bash(uv run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --base main --head chore/project-bootstrap --title 'chore: bootstrap uv project, package skeleton, env template' --body ' *)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline -10)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView status)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView branch --show-current)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline main..HEAD)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline main -5)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView branch -a)",
+      "Bash(gh pr *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\jacob\\.claude\\skills"
