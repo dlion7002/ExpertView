@@ -86,3 +86,4 @@ Propose, do not apply.
 - **Decide and log** for internal questions: helper structure, file naming inside a module, test layout, log message wording.
 - **Propose, do not apply** for hook changes, `settings.json` edits, dependency additions, or anything affecting the user's environment outside this repo.
 
+

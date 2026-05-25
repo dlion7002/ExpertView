@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  repository-health:
+    name: Repository health
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate required workflow documents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            "README.md"
+            "CONTRIBUTING.md"
+            "ProjectDocs/branching_strategy.md"
+            "ProjectDocs/workflow.md"
+            "ProjectDocs/decisions.md"
+            ".github/pull_request_template.md"
+          )
+
+          for file in "${required[@]}"; do
+            test -f "$file"
+          done
+
+      - name: Check text file hygiene
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ignored_parts = {
+              ".git",
+              ".venv",
+              "__pycache__",
+              ".pytest_cache",
+              ".ruff_cache",
+              ".mypy_cache",
+          }
+          text_suffixes = {".md", ".yml", ".yaml", ".toml", ".py", ".txt"}
+          errors = []
+
+          for path in Path(".").rglob("*"):
+              if any(part in ignored_parts for part in path.parts):
+                  continue
+              if not path.is_file() or path.suffix not in text_suffixes:
+                  continue
+
+              text = path.read_text(encoding="utf-8")
+              for line_number, line in enumerate(text.splitlines(), start=1):
+                  if line.rstrip(" \t") != line:
+                      errors.append(f"{path}:{line_number}: trailing whitespace")
+              if text and not text.endswith("\n"):
+                  errors.append(f"{path}: missing final newline")
+
+          if errors:
+              print("\n".join(errors))
+              raise SystemExit(1)
+          PY
+
+      - name: Run Python quality gates when package exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f pyproject.toml ]; then
+            echo "Python package is not scaffolded yet; repository-health checks are active."
+            exit 0
+          fi
+
+          python -m pip install --upgrade pip
+          python -m pip install uv
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest

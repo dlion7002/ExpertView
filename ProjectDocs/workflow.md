@@ -56,7 +56,16 @@ A task is **not done** until all of the following hold:
 - **`project_introduction.md` is immutable.** It is the seed of truth. Treat it as read-only.
 - **`architecture.md` updates only by amendment.** Add a "Changes" section at the bottom if the protocols evolve materially; do not rewrite silently.
 
-## 7. Commit hygiene
+## 7. Branching, PRs, and commit hygiene
+
+ExpertView uses the lightweight GitHub Flow documented in [branching_strategy.md](branching_strategy.md). The short version:
+
+- `main` is stable and demo-ready.
+- Work happens in short-lived `feature/*`, `fix/*`, `docs/*`, or `chore/*` branches.
+- Changes merge through pull requests, even for solo work, because PRs act as review and documentation checkpoints.
+- CI must pass before merge.
+- Demo-ready states on `main` are marked with annotated release tags such as `v0.1.0-demo`.
+- Do not introduce `develop`, `release/*`, or `hotfix/*` branches unless the project later has multiple maintained release lines.
 
 - One logical change per commit. Module + its test in the same commit is fine.
 - Commit message format: `<area>: <one-line summary>` then a body explaining *why* (not *what* — the diff shows the what). Example: `evidence: introduce CausalLink schema for cross-domain hypotheses`.

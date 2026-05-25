@@ -191,3 +191,15 @@ Mock corpora and investigator prompts are tuned around this scenario. Spawning t
 ## (All phase-0 open questions resolved as of 2026-05-25)
 
 All five questions previously tracked in [open_questions.md](open_questions.md) are now either locked (Q1–Q4) or formally deferred with revisit trigger (Q5). Phase 1 (Skeleton + contracts) is unblocked. New open questions arising during phase 1+ should be appended to [open_questions.md](open_questions.md) per [workflow.md §6](workflow.md).
+
+---
+
+## 2026-05-25 — Lightweight GitHub Flow for repository collaboration
+
+**Decision**: ExpertView uses a lightweight GitHub Flow / trunk-based workflow. `main` is the stable demo-ready branch. Work happens in short-lived `feature/*`, `fix/*`, `docs/*`, and `chore/*` branches, then merges through pull requests with automated checks. Demo-ready states are marked with annotated tags such as `v0.1.0-demo`.
+
+**Why**: This is a solo-built pre-hackathon and portfolio project. The repository needs enough process to show professional branch discipline, review checkpoints, quality gates, and release traceability, but not enough ceremony to look artificially enterprise-scale. A lightweight flow keeps the demo branch trustworthy and easy to explain to a company.
+
+**Alternatives considered**: Full GitFlow with `develop`, `release/*`, and `hotfix/*` branches (rejected — useful for teams maintaining multiple production versions, unnecessary here); direct commits to `main` (rejected — weak review and traceability story); branch-per-phase without PRs (rejected — planning is visible, but integration discipline is not).
+
+**Reversibility**: Easy. If ExpertView later becomes a multi-release product with more contributors, the project can introduce a heavier release strategy. Until then, the lightweight workflow is the honest fit.
