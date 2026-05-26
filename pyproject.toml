@@ -68,3 +68,6 @@ indent-style = "space"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
+markers = [
+    "slow: tests that exercise the real embedding model or other multi-minute setup (still run by default)",
+]
