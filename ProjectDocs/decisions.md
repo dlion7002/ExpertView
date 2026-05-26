@@ -194,6 +194,70 @@ All five questions previously tracked in [open_questions.md](open_questions.md) 
 
 ---
 
+## 2026-05-26 — `python-dotenv` as a dev-only dependency for test env loading
+
+**Decision**: Add `python-dotenv>=1.0` to the `dev` dependency group in [pyproject.toml](../pyproject.toml) and load `.env` from the repo root once in a new [tests/conftest.py](../tests/conftest.py) via `load_dotenv(..., override=False)`. The runtime package (`src/expertview/`) does not depend on `python-dotenv`; the provider factory in [src/expertview/agents/llms.py](../src/expertview/agents/llms.py) continues to read `os.environ` directly and to refuse to load `.env` itself.
+
+**Why**: Integration tests under [tests/integration/test_provider_keys.py](../tests/integration/test_provider_keys.py) skip when `NVIDIA_API_KEY` / `ANTHROPIC_API_KEY` are missing from `os.environ`. With keys living only in `.env`, a plain `uv run pytest` always skipped — defeating the smoke-test purpose of the suite. The provider factory's docstring deliberately makes the *caller* responsible for env loading, and the test process is the legitimate caller here. Scoping the dependency to the `dev` group keeps the production install footprint unchanged and preserves the architectural rule that the runtime never reads `.env`. `override=False` so shell-exported or CI-injected values continue to win.
+
+**Alternatives considered**:
+- Hand-roll a minimal `.env` parser in `tests/conftest.py` with no new dep (rejected — ~15 lines of parser plus quoting/escape edge cases for negligible benefit; `python-dotenv` is the de-facto standard and dev-only).
+- Load `.env` inside `llms.py` itself (rejected — violates the factory's documented contract and the [CLAUDE.md](../CLAUDE.md) architecture rule that the factory only reads `os.environ`).
+- Require users to `export` keys per shell session (rejected — every fresh PowerShell session would re-skip the integration suite; this is exactly the friction the change removes).
+
+**Reversibility**: Easy. Removing the line from `pyproject.toml`, deleting `tests/conftest.py`, and reverting this entry restores the prior state. No production code touches `python-dotenv`.
+
+---
+
+## 2026-05-26 — Pivot from NVIDIA NIM to OpenRouter + local embeddings
+
+**Decision**: The LLM provider stack pivots from NVIDIA NIM (`ChatNVIDIA`) + Anthropic direct (`ChatAnthropic`) to **OpenRouter as the sole LLM gateway**, accessed via `langchain_openai.ChatOpenAI` with `base_url="https://openrouter.ai/api/v1"`. Embeddings move **from `nv-embed-v2` to local `BAAI/bge-small-en-v1.5`** via `langchain_huggingface.HuggingFaceEmbeddings` + `sentence-transformers`. The NV-Rerank step is **dropped** from v1; if rehearsal shows retrieval-quality issues, it returns as a local `CrossEncoder` (`BAAI/bge-reranker-base`) — never as a hosted endpoint.
+
+Concrete model selection (May 2026 OpenRouter free catalog):
+
+- **Investigators (5 parallel)** → `openrouter/owl-alpha` (free, 1.05M context, agentic-foundation positioning, native tool use). Fallback if rate-limited: `nvidia/nemotron-3-super:free` (120B MoE, 1M context, explicitly multi-agent-positioned).
+- **Synthesizer (build / iteration)** → `deepseek/deepseek-v4-flash:free` (free; hybrid attention; 1M context; supports reasoning effort levels). Spiritual successor to the original DeepSeek-R1 pick.
+- **Synthesizer (final rehearsal + demo)** → paid frontier model, env-selected at demo time (`anthropic/claude-opus-4.7`, `openai/gpt-5`, or whichever frontier ID OpenRouter lists). The user's $5 OpenRouter credit funds only these demo-window calls.
+
+The `EXPERTVIEW_SYNTH_MODEL` env var keeps its name but now holds an OpenRouter model ID directly (no discrete `deepseek-r1` / `opus-4-7` selector token). The discrete selector and the `SUPPORTED_SYNTHESIZER_MODELS` whitelist are removed from `agents/llms.py`. The `ANTHROPIC_API_KEY` constant is removed (Anthropic is reached through OpenRouter; no separate billing relationship). One key (`OPENROUTER_API_KEY`) replaces the prior two-key (`NVIDIA_API_KEY` + `ANTHROPIC_API_KEY`) story.
+
+**Why**: The free NVIDIA NIM endpoints assumed by the 2026-05-25 multi-provider split decision do not work against the user's key — `nvidia/nv-embed-v2` and `deepseek-ai/deepseek-r1` both return `"age not found"` from the NIM gateway, and the LangChain client warns `Model nvidia/nv-embed-v2 is unknown`. Llama 3.3 70B works through NIM but only one of the three required endpoints functioning is not a viable build path. Switching providers is the smaller cost than waiting on NIM catalog rotation.
+
+OpenRouter solves four problems at once: (1) the failing NIM endpoints are replaced with a working gateway via `ChatOpenAI`-compatible API, (2) the build phase runs entirely on free OR catalog (Owl Alpha / DeepSeek V4 Flash / Nemotron 3 Super) so the user's $5 budget is preserved, (3) the demo synthesizer swap survives — the same env var now selects a frontier OpenRouter ID instead of switching SDKs, (4) the multi-provider routing story for the CV is *stronger* through OpenRouter (the candidate sees "selected the right gateway for the multi-model story" instead of "wired two separate provider SDKs and one didn't work").
+
+Local embeddings remove the hosted-embedding network dependency entirely. `BAAI/bge-small-en-v1.5` sits near the top of MTEB at the small-tier level, runs on CPU at sub-second latency for <1k-doc corpora, and has no quota. The added `sentence-transformers` dependency pulls in `torch` (~200 MB on first sync) — accepted as a one-time install cost in exchange for permanently zero-cost, zero-quota retrieval.
+
+This entry **supersedes**:
+- The 2026-05-25 *Multi-provider model split via NVIDIA NIM + Anthropic* decision (the NIM endpoints were the load-bearing assumption that no longer holds).
+- The 2026-05-25 *Resolve Q2: NV-Embed-v2 + NV-Rerank* decision (NV-Embed-v2 fails; NV-Rerank is dropped from v1).
+- The 2026-05-25 *Defer Q5: Anthropic spend cap + NIM quota tracking* decision insofar as the underlying provider question is now answered — there is no separate Anthropic billing relationship anymore; the OpenRouter $5 is the entire LLM budget, and quota tracking happens via OpenRouter's dashboard rather than a separate NIM tracker.
+
+**Alternatives considered**:
+- *Hunt for working NIM model IDs* (rejected — even if patched today, NIM catalog rotates and the failure mode would recur; the deeper issue is the user's free key entitlement is unclear).
+- *Switch to Anthropic-only via the $5 directly* (rejected — $5 of Anthropic on iteration burns fast; forces build onto free LLM provider anyway; two SDKs to manage; less flexible than OpenRouter routing).
+- *Together AI / Fireworks / DeepInfra for Llama hosting* (rejected — none has a free tier comparable to OpenRouter's; $5 burns the same as OR's paid lane without the free safety net).
+- *Pure OpenAI* (`gpt-4o-mini`) (rejected — fine technically but locks the model story to one provider; weakens the routing CV signal).
+- *Keep NV-Rerank via a different provider* (deferred — the `KnowledgeStore` v1 wrapping `InMemoryVectorStore` does not expose reranking, so dropping reranker is internal; reintroduce locally via `CrossEncoder` if phase 5 quality testing requires it).
+
+**Reversibility**: Easy. Every model identifier is a string in `agents/llms.py`. Returning to NIM (or splitting across providers again) is a one-file change plus a `pyproject.toml` dependency add. The factory's public function signatures (`create_investigator_llm`, `create_synthesizer_llm`, `create_embeddings`) are preserved, so no downstream code needs to change. The embeddings model is also a string swap — moving to a hosted embedding endpoint later (e.g. `text-embedding-3-small` via OpenRouter) is a one-line change inside `create_embeddings`.
+
+---
+
+## 2026-05-26 — Drop the project_introduction.md "never modify" hard rule
+
+**Decision**: The hard rule in [CLAUDE.md](../CLAUDE.md) — *"Never modify [ProjectDocs/project_introduction.md](project_introduction.md) — it is the seed of truth"* — is **removed**. `project_introduction.md` is now treated as a living document that should track the project's current framing, just like [vision.md](vision.md) and [architecture.md](architecture.md). Concurrently, the file is rewritten so its lead paragraph leads with the **CV/portfolio-asset framing**, with the shapeX hackathon recast as a milestone the build also targets rather than the primary success measure.
+
+**Why**: The seed-of-truth doctrine made sense when `project_introduction.md` was the user's original brain dump and every other doc derived from it — keeping it immutable preserved an audit trail. After the 2026-05-25 CV-signal reframe (logged via the LangGraph adoption decision and the multi-provider model split decision) and the 2026-05-26 OpenRouter pivot above, the original framing is misleading on first read: a new reader (including a future Claude session) would lead with "hackathon-first" when the actual primary goal has been "interview/hiring legibility for AI-platform roles" for over a week. A misleading lead doc is a worse audit trail than a living one. The user explicitly waived the rule (2026-05-26 conversation: *"update project_introduction as the project now is much more cv oriented than hackathon"*). Concurrent removal of the hard rule and the rewrite ensures the rulebook and the artifact agree.
+
+**Alternatives considered**:
+- *Leave project_introduction.md untouched, update only vision.md* (rejected — would technically preserve the rule but leave two docs in tension; vision.md already says CV-first, so the only thing left for the rule to protect is a contradiction in the lead doc).
+- *Append a "Current framing" section to project_introduction.md without removing the hard rule* (rejected — the rule's wording is "never modify"; adding a section is still a modification, so we'd either silently break the rule or explicitly waive it. If we're waiving, we should remove the rule and not pretend it still applies).
+- *Keep the original brain dump verbatim under a heading and prepend new framing* (rejected for the same reason — modification either way; better to write the doc as a coherent current-state doc and remove the rule honestly).
+
+**Reversibility**: Easy. Re-add the hard rule line to [CLAUDE.md](../CLAUDE.md) under "Hard rules (never bypass)" and treat `project_introduction.md` as locked from any future date. The current rewrite remains in git history regardless.
+
+---
+
 ## 2026-05-25 — Lightweight GitHub Flow for repository collaboration
 
 **Decision**: ExpertView uses a lightweight GitHub Flow / trunk-based workflow. `main` is the stable demo-ready branch. Work happens in short-lived `feature/*`, `fix/*`, `docs/*`, and `chore/*` branches, then merges through pull requests with automated checks. Demo-ready states are marked with annotated tags such as `v0.1.0-demo`.

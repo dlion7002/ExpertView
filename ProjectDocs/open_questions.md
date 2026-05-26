@@ -14,7 +14,7 @@
 - **Q2 — Demo incident scenario** → locked to the CNC out-of-tolerance scenario (shift 3, line 2, post-hydraulic-cylinder maintenance, new-supplier bearing batch). Mock corpora + investigator prompts tune around it.
 - **Q3 — Vector store integration** → locked to LangChain `InMemoryVectorStore` wrapped behind `KnowledgeStore`. FAISS is the pre-identified upgrade path.
 - **Q4 — Mock corpora generation strategy** → locked to hybrid (Claude drafts, user hand-curates for the planted causal-chain clues).
-- **Q5 — Anthropic spend cap + NIM quota tracking** → formally deferred until a fully functional end-to-end demo exists on the NVIDIA NIM free-tier stack. Revisit at end of phase 5 (or earlier if NIM quota strain shows up). Recorded as a deferral, not a lock — when the trigger fires this returns here as a fresh question.
+- **Q5 — LLM provider budget tracking** → resolved 2026-05-26. The NIM + Anthropic two-provider plan was superseded by the OpenRouter pivot (see [decisions.md 2026-05-26](decisions.md)); budget tracking now happens via the OpenRouter dashboard against the user's $5 credit, and there is no separate NIM or Anthropic billing relationship to track. The original deferral is no longer load-bearing.
 
 Phase 1 (Skeleton + contracts) is unblocked. New questions arising during phase 1+ should be appended below per [workflow.md §6](workflow.md).
 

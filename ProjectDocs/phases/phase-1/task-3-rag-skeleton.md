@@ -51,7 +51,7 @@ No real corpora are embedded here. This task delivers the *contract* and a *stub
 
 **Downstream**:
 
-- Phase 2 `rag/domains/mechanical.py` loader reads `data/domains/mechanical/*.md`, embeds via `NVIDIAEmbeddings`, and returns an `InMemoryKnowledgeStore` instance.
+- Phase 2 `rag/domains/mechanical.py` loader reads `data/domains/mechanical/*.md`, embeds via the local `HuggingFaceEmbeddings` instance constructed in `agents/llms.py`, and returns an `InMemoryKnowledgeStore`.
 - Phase 3 adds `rag/domains/{process,supply_chain,environmental,human_factors}.py` loaders following the same pattern.
 - Phase 2+ investigator nodes accept a `KnowledgeStore` and call `.search()` against it.
 - Phase 7's optional FAISS upgrade swaps the implementation behind the protocol without touching any caller — that is exactly the swap the protocol exists to make cheap.
@@ -64,8 +64,8 @@ No real corpora are embedded here. This task delivers the *contract* and a *stub
 
 ## Risks / constraints / assumptions
 
-- **Constraint**: `langchain_anthropic` and `langchain_nvidia_ai_endpoints` are forbidden in `rag/` ([architecture.md §5](../../architecture.md)). Only `langchain_core` and `langchain_community` are allowed.
-- **Constraint**: embeddings instances are *passed in* to the store, never constructed inside `rag/`. Constructing a `ChatNVIDIA` / `NVIDIAEmbeddings` is exclusively `agents/llms.py`'s job ([CLAUDE.md architecture rules](../../../CLAUDE.md)).
+- **Constraint**: `langchain_openai` and `langchain_huggingface` are forbidden in `rag/` ([architecture.md §5](../../architecture.md)). Only `langchain_core` and `langchain_community` are allowed.
+- **Constraint**: embeddings instances are *passed in* to the store, never constructed inside `rag/`. Constructing a `ChatOpenAI` / `HuggingFaceEmbeddings` is exclusively `agents/llms.py`'s job ([CLAUDE.md architecture rules](../../../CLAUDE.md)).
 - **Risk**: returning LangChain's native `Document` type instead of the project's pydantic `Document` would leak an internal type past the protocol boundary. The implementation must translate. This is exactly the kind of silent contract drift the protocol is meant to prevent.
 - **Risk**: over-extending the protocol now ("we'll need filtering / metadata search / hybrid retrieval"). [CLAUDE.md coding standards](../../../CLAUDE.md): *"Don't add features, refactor, or introduce abstractions beyond what the task requires."* Phase 2 will tell you what `KnowledgeStore` actually needs.
 - **Assumption**: a deterministic local fake embeddings object is good enough for the unit test. If `langchain_core` does not ship a usable test double, a one-class fake in the test file is acceptable.

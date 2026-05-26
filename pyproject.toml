@@ -16,9 +16,10 @@ classifiers = [
 dependencies = [
     "langgraph>=0.2",
     "langchain-core>=0.3",
-    "langchain-anthropic>=0.2",
-    "langchain-nvidia-ai-endpoints>=0.3",
+    "langchain-openai>=0.2",
+    "langchain-huggingface>=0.1",
     "langchain-community>=0.3",
+    "sentence-transformers>=3.0",
     "langsmith>=0.1",
     "pydantic>=2.7",
     "structlog>=24.1",
@@ -32,6 +33,7 @@ expertview = "expertview.cli:main"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "python-dotenv>=1.0",
     "ruff>=0.5",
 ]
 

@@ -16,7 +16,7 @@ The demo audience at the hackathon will be judges with mixed technical depth, so
 
 ## Project mode
 
-**This is a pre-hackathon build.** ExpertView is constructed in advance over multiple sessions and brought to the event already polished. The hackathon day itself is for final-touch adaptation, not first-time construction. See [build_plan.md](build_plan.md) for the phase breakdown and the at-event usage strategy.
+**This is primarily a CV/portfolio build, secondarily a pre-hackathon build.** ExpertView is constructed in advance over multiple sessions to demonstrate production-shaped multi-agent engineering on industry-standard tooling (LangGraph + LangSmith + OpenRouter) — the artifact a reviewer at an AI-platform company can read end-to-end and recognize as competent. The shapeX 1-day hackathon is a milestone the same build also targets: if the brief aligns, the project ships intact with minor scenario tuning; if it diverges, the modular pieces (`rag/`, `orchestration/`, `evidence/`, `agents/`) lift into a different application. Either way the hackathon day is for adaptation, not first-time construction. See [build_plan.md](build_plan.md) for the phase breakdown and the at-event usage strategy.
 
 ## Success criteria (for the finished pre-hackathon system)
 

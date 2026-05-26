@@ -23,9 +23,10 @@ This is *not* a pipeline with an orchestrator label. The multi-agent shape is st
 src/expertview/
   agents/              # Investigator + synthesizer abstractions and concrete impls
     base.py            #   Investigator + Synthesizer protocols
-    llms.py            #   ChatAnthropic + ChatNVIDIA factory (the ONLY place LLM clients
-                       #     are instantiated). Reads env vars; honors EXPERTVIEW_SYNTH_MODEL
-                       #     to swap synthesizer between deepseek-r1 (build) and opus-4-7 (demo).
+    llms.py            #   ChatOpenAI (pointed at OpenRouter) + HuggingFaceEmbeddings factory
+                       #     (the ONLY place LLM/embedding clients are instantiated). Reads env
+                       #     vars; honors EXPERTVIEW_SYNTH_MODEL to swap the synthesizer between
+                       #     free OpenRouter IDs (build) and a paid frontier ID (demo).
     investigators/     #   One file per domain: mechanical.py, process.py, supply.py,
                        #     environmental.py, human_factors.py.
                        #     Each exports an async LangGraph node function.
@@ -141,8 +142,8 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
          │     │     │  ... 5 LangGraph branches in parallel via Send API
          ▼     ▼     ▼
    ┌──────┐┌──────┐┌──────┐
-   │ Mech ││ Proc ││Supply│ ...  each: queries its KnowledgeStore (NV-Embed + NV-Rerank),
-   └──┬───┘└──┬───┘└──┬───┘      calls Llama 3.3 70B via ChatNVIDIA,
+   │ Mech ││ Proc ││Supply│ ...  each: queries its KnowledgeStore (local bge-small embeddings),
+   └──┬───┘└──┬───┘└──┬───┘      calls Owl Alpha via ChatOpenAI→OpenRouter,
       │       │       │           returns {"findings": [...]} → state-merged via reducer
       └───────┴───────┘
                               ┌────────────────────────────┐
@@ -157,13 +158,14 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
                                   └────────┬─────────┘
                                            │ else: fall through
                                            ▼
-                          ┌──────────────────────────┐
-                          │       synthesizer        │
-                          │         (node)           │
-                          │  DeepSeek-R1 (build) or  │
-                          │  Opus 4.7 (demo)         │
-                          │  emits CausalReport      │
-                          └──────────┬───────────────┘
+                          ┌──────────────────────────────────┐
+                          │           synthesizer            │
+                          │             (node)               │
+                          │  DeepSeek V4 Flash :free (build) │
+                          │  or paid frontier (demo)         │
+                          │  — both via OpenRouter           │
+                          │  emits CausalReport              │
+                          └──────────┬───────────────────────┘
                                      ▼
                           ┌──────────────────────┐
                           │     CausalReport     │ →  UI / CLI render
@@ -176,17 +178,17 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
 
 - **Agents communicate only via the LangGraph shared state.** No direct calls between investigators. The synthesizer is the sole reader of the final state snapshot. The state schema lives in `orchestration/state.py` as `ExpertViewState`.
 - **LangGraph nodes are pure async functions `(State) -> dict`** returning state patches. No side effects outside the returned patch and explicit LangSmith spans. This keeps the topology reasoning-about-able.
-- **LLM provider clients are instantiated only in `agents/llms.py`.** `ChatAnthropic` and `ChatNVIDIA` are imported by node implementations from this single factory module — never instantiated inline. The factory honors `EXPERTVIEW_SYNTH_MODEL` to switch the synthesizer between DeepSeek-R1 (build/iteration) and Opus 4.7 (demo / final rehearsal).
+- **LLM provider clients are instantiated only in `agents/llms.py`.** `ChatOpenAI` (pointed at OpenRouter) and `HuggingFaceEmbeddings` are imported by node implementations from this single factory module — never instantiated inline. The factory honors `EXPERTVIEW_SYNTH_MODEL` to switch the synthesizer between a free build-phase OpenRouter ID (`deepseek/deepseek-v4-flash:free` by default) and a paid frontier ID at demo time.
 - **RAG stores expose only the `KnowledgeStore` protocol.** Callers cannot reach into vector store internals; if a caller needs more, extend the protocol.
 - **Investigator + synthesizer prompts live in `src/expertview/prompts/`.** They are versioned files, never inline f-strings buried in agent code. Prompts are provider-agnostic (no model-specific tokens baked in).
 - **Synthesizer is side-effect-free.** The synthesizer node calls an LLM and returns `{"causal_report": CausalReport(...)}` as its state patch — nothing else. No bus writes, no disk writes, no spawning. "Pure" here means no side effects in the orchestration sense.
 - **Cross-agent data goes through pydantic models in `evidence/models.py`.** Never raw dicts. This guards against silent schema drift between nodes that read/write the shared state.
-- **Module boundaries are walls, not suggestions.** A file in `rag/` does not import from `agents/`. A file in `evidence/` does not import from `orchestration/`. `agents/` may import from `langchain_anthropic` and `langchain_nvidia_ai_endpoints`; `rag/` may import from `langchain_core` and `langchain_community` retrievers; `evidence/` and `prompts/` import neither (LLM-provider-pure). Test imports are the only exception.
+- **Module boundaries are walls, not suggestions.** A file in `rag/` does not import from `agents/`. A file in `evidence/` does not import from `orchestration/`. `agents/` may import from `langchain_openai` and `langchain_huggingface`; `rag/` may import from `langchain_core` and `langchain_community` retrievers; `evidence/` and `prompts/` import neither (LLM-provider-pure). Test imports are the only exception.
 
 ## 6. Concurrency model
 
 - Investigators run as LangGraph branches dispatched from a `dispatcher` node via the `Send` API. Under the hood this executes them as concurrent asyncio tasks — the parallelism story is preserved, the framework just owns the fan-out plumbing.
-- LLM calls go through LangChain's async interface: `ChatNVIDIA.ainvoke(...)` for investigators (Llama 3.3 70B) and for the build-phase synthesizer (DeepSeek-R1); `ChatAnthropic.ainvoke(...)` for the demo-phase synthesizer (Opus 4.7). Both clients are constructed once in `agents/llms.py`.
+- LLM calls go through LangChain's async interface: `ChatOpenAI.ainvoke(...)` for investigators (`openrouter/owl-alpha`, free), the build-phase synthesizer (`deepseek/deepseek-v4-flash:free`), and the demo-phase synthesizer (paid frontier OR ID, e.g. `anthropic/claude-opus-4.7`). One client class, one base URL (`https://openrouter.ai/api/v1`), one key (`OPENROUTER_API_KEY`), all constructed in `agents/llms.py`.
 - Cross-branch state merge happens through `Annotated[list[...], operator.add]` reducers on the relevant `ExpertViewState` fields — multiple branches publishing findings simultaneously is the merge case that drove the schema design.
 - Dynamic sub-investigation: a conditional edge after the investigator fan-out evaluates predicates from `agents/spawning.py` over the merged `state["findings"]`. If a predicate fires, the edge routes to a `sub_investigator` node; otherwise it falls through to the `synthesizer` node. This is a single-process, single-machine demo — no Redis, no Kafka.
 
@@ -197,15 +199,15 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
 - **Python 3.11+** managed by **uv** (lockfile + virtualenv).
 - **Agent orchestration**: **LangGraph** — `StateGraph` with the `Send` API for parallel branch fan-out and conditional edges for dynamic sub-investigation spawning. The graph is wired in `orchestration/runner.py`; the shared state schema is `ExpertViewState` in `orchestration/state.py`.
 - **Tracing / observability**: **LangSmith** — every node + LLM call captured as a span; trace replay is the demo-day fallback if a live run fails (replacing what would have been a hand-rolled JSONL recorder).
-- **LangChain provider integrations**: `langchain-core`, `langchain-anthropic` (for `ChatAnthropic`), `langchain-nvidia-ai-endpoints` (for `ChatNVIDIA` + `NVIDIAEmbeddings` + `NVIDIARerank`), `langchain-community` (for retrievers / vector stores).
-- **LLM models, by task**:
-  - *Investigators (5 parallel)* → **Llama 3.3 70B Instruct** via NIM (`ChatNVIDIA(model="meta/llama-3.3-70b-instruct")`).
-  - *Synthesizer, build / iteration* → **DeepSeek-R1** via NIM (`ChatNVIDIA(model="deepseek-ai/deepseek-r1")`). Free, strong thinking model.
-  - *Synthesizer, final rehearsal + demo* → **Anthropic Opus 4.7** (`ChatAnthropic(model="claude-opus-4-7")`). The quality lever, bought only when judges watch.
-  - Synthesizer choice is selected by `EXPERTVIEW_SYNTH_MODEL` env var, read by the factory in `agents/llms.py`.
-- **Embeddings**: **`nv-embed-v2`** via `NVIDIAEmbeddings`. Top-MTEB quality at zero marginal cost.
-- **Reranker**: **`nv-rerankqa-mistral-4b-v3`** (or current equivalent NIM reranker) via `NVIDIARerank`.
-- **Vector store**: LangChain `InMemoryVectorStore` wrapped behind the `KnowledgeStore` protocol (v1) — locked 2026-05-25 in [decisions.md](decisions.md). FAISS via `langchain-community` is the pre-identified upgrade path if embedding-on-startup costs grow under NIM quota.
+- **LangChain provider integrations**: `langchain-core`, `langchain-openai` (for `ChatOpenAI` pointed at OpenRouter), `langchain-huggingface` (for `HuggingFaceEmbeddings`), `langchain-community` (for retrievers / vector stores). `sentence-transformers` powers `HuggingFaceEmbeddings` locally.
+- **LLM models, by task** (all via OpenRouter; one base URL, one API key):
+  - *Investigators (5 parallel)* → **`openrouter/owl-alpha`** (free, 1.05M context, agentic-foundation positioning, native tool use). Fallback if rate-limited: `nvidia/nemotron-3-super:free`.
+  - *Synthesizer, build / iteration* → **`deepseek/deepseek-v4-flash:free`** (free, 1M context, hybrid attention, reasoning-effort levels).
+  - *Synthesizer, final rehearsal + demo* → **`anthropic/claude-opus-4.7`** or equivalent paid frontier (`openai/gpt-5`, whichever OpenRouter lists at demo time). The quality lever, funded by the $5 OpenRouter credit, used only when judges watch.
+  - Synthesizer choice is selected by `EXPERTVIEW_SYNTH_MODEL` env var (holds an OpenRouter model ID directly), read by the factory in `agents/llms.py`.
+- **Embeddings**: **`BAAI/bge-small-en-v1.5`** via `HuggingFaceEmbeddings` (`sentence-transformers` backend). Top-of-MTEB at the small tier, ~33M params, ~130 MB local download, normalized embeddings, runs CPU-fast at <1k-doc scale. No network dependency, no quota.
+- **Reranker**: dropped from v1. If phase 5 retrieval quality requires it, reintroduce a local `CrossEncoder` (`BAAI/bge-reranker-base`) — never a hosted endpoint.
+- **Vector store**: LangChain `InMemoryVectorStore` wrapped behind the `KnowledgeStore` protocol (v1) — locked 2026-05-25 in [decisions.md](decisions.md). FAISS via `langchain-community` is the pre-identified upgrade path if startup-time embedding costs grow under a larger corpus.
 - **Schemas**: pydantic v2.
 - **Logging**: structlog (structured, JSON-friendly) for application logs; LangSmith for LLM-call traces.
 - **CLI / console output**: `rich` for readable demos.
@@ -215,7 +217,7 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
 
 ### Soft spot worth noting
 
-- `langchain_anthropic`'s support for Anthropic prompt caching has historically lagged the raw SDK. If demo-time synthesizer caching matters, the demo-path synthesizer node may drop to the raw Anthropic SDK; the built-in `claude-api` skill governs that code path. The build-path (DeepSeek-R1 via `ChatNVIDIA`) is unaffected — NVIDIA NIM has no equivalent caching feature.
+- OpenRouter forwards Anthropic prompt-cache control headers but historically with some lag and provider-specific quirks. If demo-time synthesizer caching turns out to be load-bearing for response quality or cost, the demo-path synthesizer node can drop below OpenRouter to the raw Anthropic SDK; the built-in `claude-api` skill governs that code path. The build-path (DeepSeek V4 Flash via OpenRouter) is unaffected — no caching feature in play there.
 
 ### Explicitly excluded
 
@@ -226,9 +228,9 @@ Concrete data shapes live in `evidence/models.py` as pydantic models. The shape 
 
 ## 8. Open architectural questions
 
-All phase-0 architectural questions are resolved or formally deferred as of 2026-05-25 — see the resolution entries in [decisions.md](decisions.md). Demo UI (Streamlit), demo incident scenario (CNC out-of-tolerance), vector store (LangChain `InMemoryVectorStore`), and mock-corpus strategy (hybrid Claude draft + hand curation) are locked. Anthropic spend cap + NIM quota tracking are deferred until a functional end-to-end demo exists. New architectural questions arising during phase 1+ are tracked in [open_questions.md](open_questions.md).
+All phase-0 architectural questions are resolved or formally deferred as of 2026-05-25 — see the resolution entries in [decisions.md](decisions.md). Demo UI (Streamlit), demo incident scenario (CNC out-of-tolerance), vector store (LangChain `InMemoryVectorStore`), and mock-corpus strategy (hybrid Claude draft + hand curation) are locked. The 2026-05-26 OpenRouter pivot supersedes the earlier multi-provider NIM + Anthropic split (see [decisions.md](decisions.md)); LLM-budget tracking now happens through OpenRouter's dashboard against the $5 build credit. New architectural questions arising during phase 1+ are tracked in [open_questions.md](open_questions.md).
 
 ## 9. What changes when
 
 - **Stable**: module boundaries, the pattern (parallel + recursive + convergence), the `KnowledgeStore` / `Investigator` / `Synthesizer` protocols, the architecture rules in section 5, the choice of LangGraph + LangSmith as the orchestration substrate.
-- **Expected to evolve**: the `ExpertViewState` TypedDict fields (we will add fields as nodes need them), pydantic model details in `evidence/models.py`, prompt templates (every demo rehearsal will adjust them), the spawning conditional-edge predicates, and the model identifiers selected by `agents/llms.py` (NIM catalog model names can change as NVIDIA rotates hosted models).
+- **Expected to evolve**: the `ExpertViewState` TypedDict fields (we will add fields as nodes need them), pydantic model details in `evidence/models.py`, prompt templates (every demo rehearsal will adjust them), the spawning conditional-edge predicates, and the OpenRouter model identifiers selected by `agents/llms.py` (OpenRouter free catalog rotates and frontier-model IDs change as providers ship new versions).

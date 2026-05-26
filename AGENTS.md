@@ -2,7 +2,7 @@
 
 ## What this project is
 
-**ExpertView** is a multi-agent Root Cause Analysis (RCA) system for industrial manufacturing incidents. Five domain investigators (mechanical, process, supply chain, environmental, human factors) run in parallel as LangGraph branches against domain-specific RAG stores, share evidence through the LangGraph shared state, spawn sub-investigations dynamically via conditional edges, and converge on an evidence-weighted causal report. Built on LangGraph + LangSmith, with Llama 3.3 70B (NIM) driving investigators, DeepSeek-R1 / Opus 4.7 driving the synthesizer (env-selected), and NV-Embed-v2 + NV-Rerank powering retrieval. **This is a pre-hackathon build** for the shapeX 1-day event — constructed in advance, brought to the event ready to demo, and also designed as a CV/portfolio asset.
+**ExpertView** is a multi-agent Root Cause Analysis (RCA) system for industrial manufacturing incidents, built as a **CV/portfolio asset** that demonstrates production-shaped multi-agent engineering (parallel branches, dynamic spawning, evidence-weighted convergence) on industry-standard tooling. Five domain investigators (mechanical, process, supply chain, environmental, human factors) run in parallel as LangGraph branches against domain-specific RAG stores, share evidence through the LangGraph shared state, spawn sub-investigations dynamically via conditional edges, and converge on an evidence-weighted causal report. Built on LangGraph + LangSmith, with LLMs routed through **OpenRouter** via an OpenAI-compatible client — `openrouter/owl-alpha` (free) for the parallel investigators, `deepseek/deepseek-v4-flash:free` for the build-phase synthesizer, and a paid frontier model (e.g. `anthropic/claude-opus-4.7`) for the demo synthesizer — and embeddings running locally via `BAAI/bge-small-en-v1.5`. The shapeX 1-day hackathon is a milestone the build also targets, but the primary success measure is interview/hiring legibility for AI-platform roles.
 
 ## First things to read when starting a session
 
@@ -15,7 +15,6 @@
 ## Hard rules (never bypass)
 
 - **Never edit `.env`.**
-- **Never modify [ProjectDocs/project_introduction.md](ProjectDocs/project_introduction.md)** — it is the seed of truth.
 - **Never change dependencies in `pyproject.toml`** without an entry in [ProjectDocs/decisions.md](ProjectDocs/decisions.md) explaining why.
 - **Never bypass tests, hooks, or lint** with `--no-verify`, `--no-gpg-sign`, or similar flags.
 - **Never commit** secrets, API keys, the local `.venv/`, `__pycache__/`, generated mock data >1MB, or model checkpoints.
@@ -46,7 +45,7 @@
 - **RAG stores expose only the `KnowledgeStore` protocol.** Extend the protocol if a caller needs more; never reach into implementation internals.
 - **Synthesizer is side-effect-free.** The synthesizer node calls an LLM and returns `{"causal_report": CausalReport(...)}` — nothing else. No state writes outside the patch, no disk writes, no spawning.
 - **Module boundaries are walls.** A file in `rag/` does not import from `agents/`. A file in `evidence/` does not import from `orchestration/`. Test files are the only exception.
-- **LLM provider clients (`ChatAnthropic`, `ChatNVIDIA`) are instantiated only in `src/expertview/agents/llms.py`.** No LLM clients in `rag/`, `evidence/`, or `prompts/`. The factory honors `EXPERTVIEW_SYNTH_MODEL` to swap the synthesizer between `deepseek-r1` (build) and `opus-4-7` (demo).
+- **LLM provider clients (`ChatOpenAI` pointed at OpenRouter, `HuggingFaceEmbeddings`) are instantiated only in `src/expertview/agents/llms.py`.** No LLM clients in `rag/`, `evidence/`, or `prompts/`. The factory honors `EXPERTVIEW_SYNTH_MODEL` to swap the synthesizer between OpenRouter model IDs (e.g. `deepseek/deepseek-v4-flash:free` for build, `anthropic/claude-opus-4.7` for demo).
 
 ## Verification commands
 
@@ -66,16 +65,16 @@ PowerShell on Windows is the user's shell — prefer `$null` not `/dev/null`, `$
 | `/verify` | After every feature, before declaring done | Forces actually running the code |
 | `/simplify` | Before declaring complex work done | Catches over-engineering |
 | `/review` | Before committing a substantial diff | Catches logic + naming issues |
-| `/security-review` | Before commits touching prompts, LLM provider clients (`ChatAnthropic`, `ChatNVIDIA`), `agents/llms.py`, LangSmith key reads, or `.env` | Catches leaks + prompt-injection holes |
+| `/security-review` | Before commits touching prompts, the LLM provider client (`ChatOpenAI` pointed at OpenRouter), `agents/llms.py`, LangSmith key reads, or `.env` | Catches leaks + prompt-injection holes |
 | `/run` | Demo rehearsals | Drives the app, confirms visible behavior |
 | `/update-config` | For `settings.json` / hooks changes | Never edit `settings.json` by hand for risky changes |
-| `claude-api` | Auto-triggers on Anthropic SDK code (relevant on the demo-time synthesizer path if it drops to raw SDK for caching) | Handles prompt caching, model selection |
+| `claude-api` | Auto-triggers on raw Anthropic SDK code (only relevant if a demo-path synthesizer ever drops below OpenRouter to the native SDK for prompt caching) | Handles prompt caching, model selection |
 
 Subagents: use `Explore` for "where is X" once `src/` grows past one file. Use `Plan` for designing non-trivial modules.
 
 ## Recommended additions (require user approval before applying)
 
-- **Hooks** (specs in [ProjectDocs/workflow.md §8](ProjectDocs/workflow.md)): PostToolUse `ruff format` on touched `.py` files; PreToolUse Bash block on `rm -rf`, `git push --force` to main, `uv remove`, and any `.env` write touching `ANTHROPIC_API_KEY`, `NVIDIA_API_KEY`, or `LANGSMITH_API_KEY`; Stop reminder to update `decisions.md` if architecture-layer files changed.
+- **Hooks** (specs in [ProjectDocs/workflow.md §8](ProjectDocs/workflow.md)): PostToolUse `ruff format` on touched `.py` files; PreToolUse Bash block on `rm -rf`, `git push --force` to main, `uv remove`, and any `.env` write touching `OPENROUTER_API_KEY` or `LANGSMITH_API_KEY`; Stop reminder to update `decisions.md` if architecture-layer files changed.
 - **Custom skills** (build only if pattern repeats ≥3 times): `rca-investigator-prompt`, `domain-rag-seed`, `agent-trace-replay`.
 
 Propose, do not apply.

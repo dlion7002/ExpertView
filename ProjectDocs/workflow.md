@@ -47,13 +47,13 @@ A task is **not done** until all of the following hold:
 
 - Run `/simplify` on the changed code to catch over-engineering, unnecessary abstractions, and duplication.
 - Run `/review` on the diff to catch logic errors, missing tests, and unclear naming.
-- Run `/security-review` before any commit that touches LLM provider code (`ChatAnthropic`, `ChatNVIDIA`), prompts, `agents/llms.py`, LangSmith key reads, or anything reading from `.env`.
+- Run `/security-review` before any commit that touches LLM provider code (`ChatOpenAI` pointed at OpenRouter, `HuggingFaceEmbeddings`), prompts, `agents/llms.py`, LangSmith key reads, or anything reading from `.env`.
 
 ## 6. Documentation discipline
 
 - **Every locked decision** goes into [decisions.md](decisions.md) the same turn it is locked. Format: date, decision, why, alternatives considered, reversibility.
 - **Every unresolved question** lives in [open_questions.md](open_questions.md). When a question is answered → resolve it (move the answer to `decisions.md`, delete the open question).
-- **`project_introduction.md` is immutable.** It is the seed of truth. Treat it as read-only.
+- **`project_introduction.md` is a living doc** — keep it aligned with the current framing. (The "immutable seed" rule was dropped 2026-05-26; see [decisions.md](decisions.md).)
 - **`architecture.md` updates only by amendment.** Add a "Changes" section at the bottom if the protocols evolve materially; do not rewrite silently.
 
 ## 7. Branching, PRs, and commit hygiene
@@ -81,10 +81,10 @@ ExpertView uses the lightweight GitHub Flow documented in [branching_strategy.md
 | `/verify` | After implementing any feature, before marking it done. |
 | `/simplify` | Before declaring complex work done — catches over-engineering. |
 | `/review` | Before committing a substantial diff. |
-| `/security-review` | Before committing anything touching prompts, LLM provider clients (`ChatAnthropic`, `ChatNVIDIA`), `agents/llms.py`, LangSmith key reads, or `.env`. |
+| `/security-review` | Before committing anything touching prompts, the LLM provider client (`ChatOpenAI` pointed at OpenRouter), `agents/llms.py`, LangSmith key reads, or `.env`. |
 | `/run` | To launch the demo and confirm visible behavior. |
 | `/update-config` | For `settings.json` / hooks changes — never edit `settings.json` by hand for risky changes. |
-| `claude-api` | Auto-triggers on Anthropic SDK code paths (relevant when the synthesizer drops to raw SDK at demo time). Trust it for caching, model selection, and migration help. |
+| `claude-api` | Auto-triggers on raw Anthropic SDK code paths (only relevant if a demo-path synthesizer ever drops below OpenRouter to the native SDK for prompt caching). Trust it for caching, model selection, and migration help. |
 
 ### Subagents to use proactively
 
@@ -97,7 +97,7 @@ ExpertView uses the lightweight GitHub Flow documented in [branching_strategy.md
 These would live in `.claude/settings.local.json` and be applied via `/update-config`. They are written here as specs:
 
 - **PostToolUse on `Edit` / `Write` for `*.py`** — run `uv run ruff format <file>` on the touched file. Deterministic style, zero willpower required.
-- **PreToolUse on `Bash`** — block commands matching: `rm -rf`, `git push --force` to `main`/`master`, `uv remove`, any write touching `.env` (including writes that introduce or modify `ANTHROPIC_API_KEY`, `NVIDIA_API_KEY`, `LANGSMITH_API_KEY`).
+- **PreToolUse on `Bash`** — block commands matching: `rm -rf`, `git push --force` to `main`/`master`, `uv remove`, any write touching `.env` (including writes that introduce or modify `OPENROUTER_API_KEY` or `LANGSMITH_API_KEY`).
 - **Stop** — if any file under `src/expertview/agents/`, `src/expertview/rag/base.py`, `src/expertview/orchestration/state.py`, `src/expertview/orchestration/runner.py`, or `src/expertview/evidence/models.py` changed in this turn, print a one-line reminder to update [decisions.md](decisions.md).
 
 ### Skills *flagged for research later* (not installed)
