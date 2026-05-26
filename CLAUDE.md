@@ -35,7 +35,6 @@
 - Pydantic v2 models for all cross-agent data (Finding, Hypothesis, CausalLink, CausalReport, Incident, Document). Never raw dicts across module boundaries. The LangGraph `ExpertViewState` (TypedDict) is the one allowed non-pydantic cross-node type and lives in `orchestration/state.py`.
 - `uv run ruff format` and `uv run ruff check .` must be clean before declaring done.
 - **No fallbacks or defensive code for cases that can't happen.** Trust internal contracts. Validate only at system boundaries (CLI input, LLM responses parsed against pydantic).
-- **No comments that restate the code.** Only WHY-comments for non-obvious constraints, workarounds, or hidden invariants.
 - No debug prints, no commented-out code, no `# TODO` without an entry in `open_questions.md` or `decisions.md`.
 
 ## Architecture rules

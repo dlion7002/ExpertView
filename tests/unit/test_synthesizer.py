@@ -125,6 +125,18 @@ async def test_synthesizer_returns_causal_report_patch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_synthesizer_strips_markdown_json_fence() -> None:
+    fenced = f"```json\n{_FAKE_LLM_JSON.strip()}\n```"
+    node = make_synthesizer_node(FakeLlm(fenced))
+
+    patch = await node(_state())
+
+    report = patch["causal_report"]
+    assert isinstance(report, CausalReport)
+    assert report.incident_id == "cnc-out-of-tolerance-2026-05-24"
+
+
+@pytest.mark.asyncio
 async def test_synthesizer_rejects_mismatched_incident_id() -> None:
     mismatched_json = _FAKE_LLM_JSON.replace(
         "cnc-out-of-tolerance-2026-05-24",

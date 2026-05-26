@@ -105,6 +105,31 @@ async def test_mechanical_investigator_returns_valid_findings_patch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mechanical_investigator_strips_markdown_json_fence() -> None:
+    document = _document()
+    store = FakeStore([document])
+    llm = FakeLlm(
+        "```json\n"
+        "[\n"
+        "  {\n"
+        '    "investigator_domain": "mechanical",\n'
+        '    "claim": "Fenced output should still parse cleanly.",\n'
+        '    "confidence": 0.6,\n'
+        '    "citations": ["mech-bearing-001"]\n'
+        "  }\n"
+        "]\n"
+        "```"
+    )
+
+    node = make_mechanical_investigator_node(store, llm, k=3)
+    patch = await node(_state())
+
+    findings = patch["findings"]
+    assert len(findings) == 1
+    assert findings[0].citations == ["mech-bearing-001"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("content", "message"),
     [

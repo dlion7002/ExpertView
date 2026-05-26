@@ -7,6 +7,7 @@ side-effect free per the CLAUDE.md architecture rules: no disk writes, no
 state writes outside the returned patch, no spawning.
 """
 
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from string import Template
@@ -21,6 +22,9 @@ __all__ = ["make_synthesizer_node"]
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "synthesizer" / "default.md"
 _FINDINGS_ADAPTER = TypeAdapter(list[Finding])
+# Real OpenRouter models routinely wrap JSON in ```json ... ``` fences despite
+# explicit prompt instructions. Strip them at the boundary before validation.
+_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 SynthesizerNode = Callable[[ExpertViewState], Awaitable[dict[str, CausalReport]]]
 
@@ -67,7 +71,15 @@ def _response_text(response: object) -> str:
 
 
 def _parse_causal_report(response_text: str) -> CausalReport:
-    return CausalReport.model_validate_json(response_text)
+    return CausalReport.model_validate_json(_strip_json_fence(response_text))
+
+
+def _strip_json_fence(text: str) -> str:
+    stripped = text.strip()
+    match = _JSON_FENCE_PATTERN.match(stripped)
+    if match is not None:
+        return match.group(1).strip()
+    return stripped
 
 
 def _validate_report(report: CausalReport, incident: Incident) -> None:
