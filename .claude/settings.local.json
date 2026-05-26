@@ -23,7 +23,18 @@
       "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline main..HEAD)",
       "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline main -5)",
       "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView branch -a)",
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView fetch --all --prune)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline --all -10)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline origin/main..origin/main)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView log --oneline origin/main -3)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView diff main --stat)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView switch main)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView pull --ff-only)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView switch -c feature/evidence-state-schemas)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView stash push -- .claude/settings.local.json)",
+      "Bash(git -C c:/AAMisArchivos/AAprogramming/AI-Sysems/ExpertView stash pop)",
+      "Bash(gh --version)"
     ],
     "additionalDirectories": [
       "C:\\Users\\jacob\\.claude\\skills"
