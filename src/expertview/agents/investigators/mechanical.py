@@ -1,5 +1,6 @@
 """Mechanical investigator LangGraph node factory."""
 
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from string import Template
@@ -15,6 +16,9 @@ __all__ = ["make_mechanical_investigator_node"]
 
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "investigator" / "mechanical.md"
 _FINDINGS_ADAPTER = TypeAdapter(list[Finding])
+# Real OpenRouter models routinely wrap JSON in ```json ... ``` fences despite
+# explicit prompt instructions. Strip them at the boundary before validation.
+_JSON_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 MechanicalInvestigatorNode = Callable[[ExpertViewState], Awaitable[dict[str, list[Finding]]]]
 
@@ -73,7 +77,15 @@ def _response_text(response: object) -> str:
 
 
 def _parse_findings(response_text: str) -> list[Finding]:
-    return _FINDINGS_ADAPTER.validate_json(response_text)
+    return _FINDINGS_ADAPTER.validate_json(_strip_json_fence(response_text))
+
+
+def _strip_json_fence(text: str) -> str:
+    stripped = text.strip()
+    match = _JSON_FENCE_PATTERN.match(stripped)
+    if match is not None:
+        return match.group(1).strip()
+    return stripped
 
 
 def _validate_findings(findings: list[Finding], documents: list[Document]) -> None:

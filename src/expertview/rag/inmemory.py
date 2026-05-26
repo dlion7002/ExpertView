@@ -26,6 +26,7 @@ class InMemoryKnowledgeStore:
         self.domain = domain
         self._store = InMemoryVectorStore(embedding=embeddings)
 
+    # Converts Documents to LangChain format and ingests them to the vector store
     def ingest(self, documents: Iterable[Document]) -> None:
         docs = list(documents)
         self._store.add_documents(
