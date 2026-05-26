@@ -1,0 +1,13 @@
+id: cnc-out-of-tolerance-2026-05-24-shift-3
+summary: CNC line 2 producing out-of-tolerance parts after shift-3 hydraulic-cylinder maintenance and recent bearing batch change.
+observed_at: "2026-05-24T22:40:00-05:00"
+symptoms:
+  - Bore diameter drifting out-of-tolerance on finished parts, reaching +0.064 mm by the shift-3 quality hold.
+  - Audible chatter during the roughing pass, stronger after spindle warm-up.
+  - Light surface finish banding on parts from cnc-line-2-cnc-04.
+  - Brief post-maintenance clamp-settle oscillation noted after hydraulic-cylinder service.
+affected_assets:
+  - cnc-line-2
+  - cnc-line-2-cnc-04
+  - spindle-04
+  - hydraulic-cylinder-hc-l2-17
