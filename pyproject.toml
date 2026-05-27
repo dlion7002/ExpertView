@@ -24,6 +24,8 @@ dependencies = [
     "pydantic>=2.7",
     "structlog>=24.1",
     "rich>=13.7",
+    "streamlit>=1.41",
+    "streamlit-mermaid>=0.3.0",
 ]
 
 [project.scripts]
