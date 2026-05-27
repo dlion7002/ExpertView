@@ -320,3 +320,37 @@ The two incidents produce different top causes (by claim and `domain_origin`) wi
 - *Land the wiring now, defer the weighting + framing as Task 1 follow-ups* (rejected — the DoD gate requires both incidents to pass on live `/verify`; the user chose to resolve both in this PR).
 
 **Reversibility**: Easy. The blend weights are three named constants in `evidence/convergence.py`; the prompt is a versioned file under `prompts/synthesizer/`; the re-scoring is isolated to the synthesizer node body. Reverting any of the three is a localized change, and the unit (`tests/unit/test_convergence.py`) + integration (`tests/integration/test_convergence.py`) tests guard the behavior.
+
+---
+
+## 2026-05-27 - Phase 6 run-progress streaming core
+
+**Decision**: Phase 6 live progress streams in-process from
+`compiled_graph.astream(..., stream_mode="updates")`, wrapped by
+`src/expertview/orchestration/streaming.py`. The adapter emits frozen Pydantic
+`ProgressEvent` objects for demo surfaces and keeps that event model local to
+`orchestration/streaming.py` rather than adding it to `evidence/models.py`.
+The same module owns the compiled-graph Mermaid topology helper and the single
+node-name to demo-label mapping keyed from `orchestration.runner` constants.
+
+**Why**: Both Phase 6 surfaces need the same incremental run feed, but neither
+the Streamlit app nor the live CLI should interpret raw LangGraph update chunks.
+Keeping the adapter in `orchestration/` preserves the architecture rule that
+graph-shaped concerns stay with the graph owner. Keeping `ProgressEvent` local
+to the streaming module avoids expanding the cross-agent evidence schema for a
+surface-progress DTO that never lives on shared state. In-process streaming also
+keeps the live view independent of LangSmith polling, so venue-network risk
+remains limited to the model calls rather than the progress feed itself.
+
+**Alternatives considered**: LangSmith polling for progress (rejected - adds a
+second network dependency and latency to a demo-critical UI path); duplicating
+stream interpretation in Streamlit and CLI (rejected - two surfaces would drift);
+placing `ProgressEvent` in `evidence/models.py` (viable, but rejected because
+progress events are orchestration/surface facts, not agent evidence); using a
+plain dataclass (rejected - weaker than the repo's typed Pydantic boundary style
+for importable DTOs).
+
+**Reversibility**: Easy. The adapter is an additive module with fake-graph unit
+tests. If a future LangGraph version changes stream shape, update
+`stream_run(...)` and its tests without touching the graph topology, agents,
+CLI, UI, prompts, or provider factory.
