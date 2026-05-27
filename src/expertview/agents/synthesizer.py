@@ -1,10 +1,14 @@
 """Synthesizer LangGraph node factory.
 
 Terminal node: reads `incident` and `findings` from `ExpertViewState`, calls
-the synthesizer LLM (constructed elsewhere via `agents.llms`), and returns
-`{"causal_report": CausalReport(...)}` as its state patch. The node is
-side-effect free per the CLAUDE.md architecture rules: no disk writes, no
-state writes outside the returned patch, no spawning.
+the synthesizer LLM (constructed elsewhere via `agents.llms`), then applies the
+deterministic post-LLM re-scoring from `evidence/convergence.py` and returns
+`{"causal_report": CausalReport(...)}` as its state patch. The LLM only drafts
+hypotheses and causal links; convergence owns the final confidence/strength
+numbers, so the report's scores are reproducible Python rather than LLM whim.
+The node is side-effect free per the CLAUDE.md architecture rules: no disk
+writes, no state writes outside the returned patch, no spawning. Re-scoring is
+a pure transform of the parsed report into a new frozen report.
 """
 
 import re
@@ -15,7 +19,8 @@ from typing import Protocol
 
 from pydantic import TypeAdapter
 
-from expertview.evidence.models import CausalReport, Finding, Incident
+from expertview.evidence.convergence import link_causes, score_hypothesis
+from expertview.evidence.models import CausalReport, Finding, Hypothesis, Incident
 from expertview.orchestration.state import ExpertViewState
 
 __all__ = ["make_synthesizer_node"]
@@ -41,7 +46,8 @@ def make_synthesizer_node(llm: SynthesizerLlm) -> SynthesizerNode:
         findings = state["findings"]
         prompt = _render_prompt(prompt_template, incident, findings)
         response = await llm.ainvoke(prompt)
-        report = _parse_causal_report(_response_text(response))
+        draft = _parse_causal_report(_response_text(response))
+        report = _rescore_report(draft, incident)
         _validate_report(report, incident)
         return {"causal_report": report}
 
@@ -80,6 +86,57 @@ def _strip_json_fence(text: str) -> str:
     if match is not None:
         return match.group(1).strip()
     return stripped
+
+
+def _rescore_report(draft: CausalReport, incident: Incident) -> CausalReport:
+    # Post-LLM re-scoring: the LLM's draft confidences/strengths are advisory;
+    # convergence assigns the final numbers deterministically. `score_hypothesis`
+    # copies every non-confidence field (including `supporting_findings` and their
+    # citations) verbatim, so the prompt's citation-preservation contract survives.
+    scored = [score_hypothesis(hypothesis) for hypothesis in draft.top_hypotheses]
+    # Match `link_causes`'s internal ordering so `top_hypotheses[0]` is the same
+    # top cause that heads the re-scored causal chain.
+    ranked = sorted(scored, key=_hypothesis_rank_key)
+    causal_chain = link_causes(ranked, incident)
+    return draft.model_copy(
+        update={
+            "top_hypotheses": ranked,
+            "causal_chain": causal_chain,
+            "confidence_summary": _summarize_confidence(ranked),
+        }
+    )
+
+
+def _hypothesis_rank_key(hypothesis: Hypothesis) -> tuple[float, str, str, str]:
+    return (
+        -hypothesis.confidence,
+        hypothesis.domain_origin,
+        hypothesis.id,
+        hypothesis.claim,
+    )
+
+
+def _summarize_confidence(ranked: list[Hypothesis]) -> str:
+    # Assembled from the computed scores, not the LLM's prose, so the summary
+    # always reflects the re-scored numbers the report actually shows. The empty
+    # case is left to `_validate_report`, which rejects a hypothesis-free report.
+    if not ranked:
+        return "No supportable hypothesis emerged from the gathered findings."
+
+    top = ranked[0]
+    domains = {hypothesis.domain_origin for hypothesis in ranked}
+    if len(ranked) == 1:
+        return (
+            f"Evidence converges on a single {top.domain_origin} hypothesis at "
+            f"{top.confidence:.0%} confidence."
+        )
+
+    margin = top.confidence - ranked[1].confidence
+    return (
+        f"Top cause is {top.domain_origin}-led at {top.confidence:.0%} confidence, "
+        f"leading the next hypothesis by {margin:.0%} across {len(ranked)} hypotheses "
+        f"spanning {len(domains)} domain(s)."
+    )
 
 
 def _validate_report(report: CausalReport, incident: Incident) -> None:
