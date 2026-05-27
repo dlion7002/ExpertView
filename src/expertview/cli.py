@@ -23,10 +23,12 @@ from typing import Final
 from uuid import UUID
 
 import yaml
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tracers.run_collector import RunCollectorCallbackHandler
 from langsmith import Client as LangSmithClient
 from pydantic import ValidationError
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -39,6 +41,7 @@ from expertview.orchestration.runner import (
     make_graph,
 )
 from expertview.orchestration.state import ExpertViewState
+from expertview.orchestration.streaming import NODE_LABELS, stream_run
 
 _CONFIDENCE_BAR_WIDTH: Final = 24
 
@@ -50,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "demo":
-        return asyncio.run(_run_demo(args.incident))
+        return asyncio.run(_run_demo(args.incident, live=args.live))
 
     parser.print_help(sys.stderr)
     return 2
@@ -98,11 +101,19 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to an incident YAML file (see data/incidents/).",
     )
+    demo.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Stream investigator progress live in the terminal as each LangGraph "
+            "node completes, then render the final report (mirrors the Streamlit surface)."
+        ),
+    )
 
     return parser
 
 
-async def _run_demo(incident_path: Path) -> int:
+async def _run_demo(incident_path: Path, *, live: bool = False) -> int:
     console = Console(legacy_windows=False)
     try:
         incident = _load_incident(incident_path)
@@ -126,17 +137,18 @@ async def _run_demo(incident_path: Path) -> int:
     }
 
     collector = RunCollectorCallbackHandler()
+    config: RunnableConfig = {"callbacks": [collector]}
     try:
-        final_state = await compiled_graph.ainvoke(
-            initial_state,
-            config={"callbacks": [collector]},
-        )
+        if live:
+            report = await _stream_demo_live(compiled_graph, initial_state, config, console)
+        else:
+            final_state = await compiled_graph.ainvoke(initial_state, config=config)
+            report = final_state.get("causal_report") if isinstance(final_state, dict) else None
     except Exception:
         console.print("[bold red]Graph invocation failed:[/bold red]")
         console.print_exception()
         return 1
 
-    report = final_state.get("causal_report") if isinstance(final_state, dict) else None
     if not isinstance(report, CausalReport):
         console.print("[bold red]Graph completed without producing a CausalReport.[/bold red]")
         return 1
@@ -144,6 +156,54 @@ async def _run_demo(incident_path: Path) -> int:
     _render_report(report, console)
     _render_trace_notice(collector, console)
     return 0
+
+
+async def _stream_demo_live(
+    compiled_graph: object,
+    initial_state: ExpertViewState,
+    config: RunnableConfig,
+    console: Console,
+) -> CausalReport | None:
+    # The live view mirrors the Streamlit surface: one row per NODE_LABELS entry,
+    # flipping Waiting -> Complete as each node's ProgressEvent arrives. rich.live
+    # is synchronous; stream_run is async — so the `async for` is driven inside this
+    # already-async coroutine (run once via asyncio.run in main), never a nested loop.
+    status_by_node = {node_name: "Waiting" for node_name in NODE_LABELS}
+    findings_count = 0
+    report: CausalReport | None = None
+
+    with Live(
+        _status_table(status_by_node, findings_count),
+        console=console,
+        refresh_per_second=8,
+    ) as live:
+        async for event in stream_run(compiled_graph, initial_state, config=config):  # type: ignore[arg-type]
+            status_by_node[event.node_name] = "Complete"
+            findings_count = event.findings_count
+            live.update(_status_table(status_by_node, findings_count))
+            if event.causal_report is not None:
+                report = event.causal_report
+
+    return report
+
+
+def _status_table(status_by_node: dict[str, str], findings_count: int) -> Table:
+    table = Table(
+        title=f"Investigation progress — {findings_count} findings so far",
+        show_lines=False,
+        expand=True,
+    )
+    table.add_column("Stage", overflow="fold")
+    table.add_column("Status", no_wrap=True)
+    for node_name, label in NODE_LABELS.items():
+        status = status_by_node.get(node_name, "Waiting")
+        table.add_row(label, _status_cell(status))
+    return table
+
+
+def _status_cell(status: str) -> Text:
+    style = "green" if status == "Complete" else "dim"
+    return Text(status, style=style)
 
 
 def _load_incident(path: Path) -> Incident:
