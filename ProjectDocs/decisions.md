@@ -279,3 +279,15 @@ This entry **supersedes**:
 **Alternatives considered**: Direct conditional routing from each investigator output (rejected - easier to misread as pre-merge routing and harder to test); attaching conditional routing to the dispatcher fan-out (rejected - the dispatcher state does not contain investigator findings yet).
 
 **Reversibility**: Easy. The join node is no-op and isolated to `orchestration/runner.py`; it can be replaced with a more compact LangGraph idiom if future LangGraph versions expose a clearer post-fan-out conditional primitive.
+
+---
+
+## 2026-05-27 - Phase 5 convergence scoring policy
+
+**Decision**: Phase 5 Task 1 uses deterministic convergence functions in `src/expertview/evidence/convergence.py`: `weight_finding` starts from `Finding.confidence` and adds a small capped citation-count lift; `score_hypothesis` recomputes confidence from the mean weighted finding score plus bounded lifts for multiple supporting findings and cross-domain support; `link_causes` scores and ranks hypotheses, builds a deterministic top cross-domain chain, and links the terminal hypothesis to up to three incident symptoms. Confidence-summary text remains deferred to Phase 5 Task 3, where the synthesizer wiring has the report context. The Task 1 branch proceeds from current `origin/main` even though the local `v0.5.0-demo` tag is absent, because Phase 4 is already merged as PR #19.
+
+**Why**: Confidence and citation count are structural evidence properties that apply to both rehearsed incidents, so they make convergence visible without hard-coding domain priors or overfitting the CNC scenario. Bounded scoring keeps pydantic confidence constraints enforceable in Python. Deterministic link generation gives Task 3 a pure, orchestration-free causal-chain input while preserving the post-LLM re-scoring design. The missing tag is a release-process gap, not a code dependency blocker for this pure module.
+
+**Alternatives considered**: Domain-specific multipliers (rejected - too easy to overfit the current incident mix); confidence-only scoring (rejected - less visibly evidence-weighted); capped-sum aggregation (rejected - over-rewards many mediocre findings); terminal-only links (rejected - weaker cross-domain convergence signal); stopping for the missing tag first (rejected - Phase 4 code is merged and Task 1 does not depend on tag metadata at runtime).
+
+**Reversibility**: Easy. The policies live in one pure module and are covered by unit tests. Task 3 can adjust the constants or consume a narrower link contract before wiring if the two-incident verification shows the scoring is too weak or too strong.
