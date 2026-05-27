@@ -291,3 +291,32 @@ This entry **supersedes**:
 **Alternatives considered**: Domain-specific multipliers (rejected - too easy to overfit the current incident mix); confidence-only scoring (rejected - less visibly evidence-weighted); capped-sum aggregation (rejected - over-rewards many mediocre findings); terminal-only links (rejected - weaker cross-domain convergence signal); stopping for the missing tag first (rejected - Phase 4 code is merged and Task 1 does not depend on tag metadata at runtime).
 
 **Reversibility**: Easy. The policies live in one pure module and are covered by unit tests. Task 3 can adjust the constants or consume a narrower link contract before wiring if the two-incident verification shows the scoring is too weak or too strong.
+
+---
+
+## 2026-05-27 — Phase 5 Task 3: post-LLM re-scoring wiring, blended convergence scoring, synthesizer root-cause framing
+
+**Decision**: Three locked choices, all landing in the Task 3 wiring PR (`feature/phase-5-convergence-wiring`):
+
+1. **Post-LLM re-scoring is wired into the synthesizer node.** Between parsing the LLM's draft `CausalReport` and returning the patch, `agents/synthesizer.py` re-scores each hypothesis via `score_hypothesis`, re-orders `top_hypotheses` by the computed confidence (matching `link_causes`'s ranking key), rebuilds `causal_chain` via `link_causes`, and assembles `confidence_summary` from the computed scores. The node stays side-effect-free, constructs new frozen models (no mutation), preserves every input citation, and keeps `_validate_report` on the final report. The LLM proposes; convergence owns the final numbers.
+
+2. **`score_hypothesis` switches from additive bounded lifts to a weighted blend.** Confidence is now `0.7 * mean_finding_weight + 0.2 * cross_domain_breadth + 0.1 * support_depth` (weights sum to 1.0; breadth/depth normalized to [0,1] over spans of 2 extra domains / 3 extra findings). This **supersedes** the "mean weighted finding score plus bounded lifts" formula in the 2026-05-27 *Phase 5 convergence scoring policy* entry above. `weight_finding` (confidence + capped citation lift) is unchanged.
+
+3. **The synthesizer prompt is narrowed (the conditional Task 3 step-3 edit).** `prompts/synthesizer/default.md` now reserves `top_hypotheses` for **originating root causes** and instructs the LLM to represent detection/verification/handover/staffing/inspection-cadence gaps as **contributing factors in the `causal_chain`**, not competing top hypotheses. It also states the final numeric `confidence`/`strength` are assigned downstream. The citation-preservation section is unchanged.
+
+The reranker reintroduction flagged in [architecture.md §7](architecture.md) remains **deferred**: Task 3's `/verify` showed convergence math and synthesizer framing — not retrieval — were the bottleneck.
+
+**Why**: The post-LLM re-scoring is what makes "evidence-weighted convergence" a reproducible, testable property rather than a prompt instruction ([build_plan.md §Phase 5](build_plan.md)). Live `/verify` exposed that the original additive lifts pushed every realistic high-confidence hypothesis (investigators rarely emit below ~0.8) to the 1.0 ceiling, so the "top cause" was decided by `link_causes`'s alphabetical `domain_origin` tie-break, not evidence — the "silent dead-code convergence" risk the Task 3 file flagged. The blend keeps scores in [0,1] with headroom so the dominant cause separates on genuine cross-domain corroboration and evidence depth. But the blend alone left a true near-tie (CNC: process detection-gap 0.886 vs bearing root cause 0.858) because the synthesizer LLM was framing the post-maintenance verification gap as a competing top hypothesis with as many high-confidence findings as the bearing cause — and both incidents then read process-led, collapsing the intended contrast. Narrowing the prompt to separate originating causes from detection gaps was the upstream fix. With all three changes, the Phase 5 quality gate passes on live runs:
+
+- **CNC** → top cause **supply_chain** (bearing batch B-227 from the new supplier) @ 0.87, leading the mechanical hypothesis (0.62) by 25%.
+- **Recipe drift** → top cause **process** (superseded Rev D recipe loaded instead of Rev F at changeover) @ 0.77.
+
+The two incidents produce different top causes (by claim and `domain_origin`) with non-trivial, score-derived confidence summaries. Every approach is domain-neutral: no hard-coded domain priors (the superseded entry already rejected those as overfitting); breadth/depth/blend reward structural evidence properties, and the prompt distinguishes originating vs detection causes generically.
+
+**Alternatives considered**:
+- *Keep the additive lifts, fix only `link_causes`'s tie-break* (rejected — scores still all show 1.0, so "evidence-weighted" stays visually hollow even if the ranking improves).
+- *Add a domain-priority / origin-anchoring multiplier to force the mechanical cause* (rejected — overfits the CNC scenario, and the diagnostic showed the two CNC hypotheses were structurally identical (5 findings, 2 domains each), so anchoring would not reliably flip them; domain multipliers were already rejected as overfitting).
+- *Accept process-led CNC and re-cut the second incident to a non-process lead* (rejected — larger scope, reopens Task 2; the prompt narrowing is domain-neutral and fixes the actual root issue, the synthesizer conflating detection gaps with originating causes).
+- *Land the wiring now, defer the weighting + framing as Task 1 follow-ups* (rejected — the DoD gate requires both incidents to pass on live `/verify`; the user chose to resolve both in this PR).
+
+**Reversibility**: Easy. The blend weights are three named constants in `evidence/convergence.py`; the prompt is a versioned file under `prompts/synthesizer/`; the re-scoring is isolated to the synthesizer node body. Reverting any of the three is a localized change, and the unit (`tests/unit/test_convergence.py`) + integration (`tests/integration/test_convergence.py`) tests guard the behavior.

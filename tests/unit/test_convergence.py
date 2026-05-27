@@ -128,7 +128,10 @@ def test_score_hypothesis_ranks_stronger_evidence_higher() -> None:
     assert score_hypothesis(strong).confidence > score_hypothesis(weak).confidence
 
 
-def test_score_hypothesis_clamps_many_high_weight_findings() -> None:
+def test_score_hypothesis_keeps_single_domain_stack_below_ceiling() -> None:
+    # Many high-confidence findings from one domain score high but must stay below
+    # 1.0: this headroom is what stops every hypothesis from saturating and lets
+    # cross-domain corroboration decide the top cause.
     hypothesis = _hypothesis(
         "hyp-high",
         "supply_chain",
@@ -140,7 +143,49 @@ def test_score_hypothesis_clamps_many_high_weight_findings() -> None:
 
     scored = score_hypothesis(hypothesis)
 
+    assert 0.7 < scored.confidence < 1.0
+
+
+def test_score_hypothesis_reaches_ceiling_only_with_full_corroboration() -> None:
+    # The ceiling is reached only when every signal maxes out: top-weight findings,
+    # the depth span, and multiple corroborating domains.
+    hypothesis = _hypothesis(
+        "hyp-converged",
+        "mechanical",
+        [
+            _finding("mechanical", "Top mechanical support.", 1.0, ["a", "b", "c", "d"]),
+            _finding("supply_chain", "Top supply-chain support.", 1.0, ["a", "b", "c", "d"]),
+            _finding("process", "Top process support.", 1.0, ["a", "b", "c", "d"]),
+            _finding("environmental", "Top environmental support.", 1.0, ["a", "b", "c", "d"]),
+        ],
+    )
+
+    scored = score_hypothesis(hypothesis)
+
     assert scored.confidence == 1.0
+
+
+def test_score_hypothesis_rewards_cross_domain_corroboration() -> None:
+    # Same finding count and confidence, but corroboration across domains outranks a
+    # single-domain stack — the core "evidence-weighted convergence" property.
+    single_domain = _hypothesis(
+        "hyp-single",
+        "mechanical",
+        [
+            _finding("mechanical", "Mechanical support one.", 0.8, ["m-001"]),
+            _finding("mechanical", "Mechanical support two.", 0.8, ["m-002"]),
+        ],
+    )
+    cross_domain = _hypothesis(
+        "hyp-cross",
+        "mechanical",
+        [
+            _finding("mechanical", "Mechanical support.", 0.8, ["m-001"]),
+            _finding("supply_chain", "Supply-chain corroboration.", 0.8, ["sc-001"]),
+        ],
+    )
+
+    assert score_hypothesis(cross_domain).confidence > score_hypothesis(single_domain).confidence
 
 
 def test_link_causes_returns_deterministic_well_formed_links() -> None:
