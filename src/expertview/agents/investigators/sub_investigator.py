@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from expertview.agents.spawning import is_bearing_anomaly
 from expertview.evidence.models import Document, Finding, Incident
+from expertview.log import get_logger
 from expertview.rag.base import KnowledgeStore
 
 if TYPE_CHECKING:
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
 __all__ = ["make_sub_investigator_node"]
 
+_LOGGER = get_logger("expertview.investigator")
+_LOG_DOMAIN = "sub_investigator"
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "investigator" / "sub_investigator.md"
 _DOCUMENTS_ADAPTER = TypeAdapter(list[Document])
 _FINDINGS_ADAPTER = TypeAdapter(list[Finding])
@@ -44,12 +47,14 @@ def make_sub_investigator_node(
 
     async def sub_investigator_node(state: ExpertViewState) -> dict[str, list[Finding]]:
         incident = state["incident"]
+        _LOGGER.info("investigator.start", domain=_LOG_DOMAIN, incident_id=incident.id)
         parent_finding = _parent_finding(state["findings"])
         documents = store.search(_supplier_history_query(incident, parent_finding), k=k)
         prompt = _render_prompt(prompt_template, incident, parent_finding, documents)
         response = await llm.ainvoke(prompt)
         findings = _parse_findings(_response_text(response))
         _validate_findings(findings, documents, domain)
+        _LOGGER.info("investigator.finish", domain=_LOG_DOMAIN, finding_count=len(findings))
         return {"findings": findings}
 
     return sub_investigator_node

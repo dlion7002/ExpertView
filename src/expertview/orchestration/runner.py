@@ -1,9 +1,10 @@
 """LangGraph runner construction for ExpertView.
 
-Phase 3 topology::
+Phase 4 topology::
 
     START → dispatcher → [mechanical | process | supply_chain |
-                          environmental | human_factors] → synthesizer → END
+                          environmental | human_factors] → spawning_join
+                          → (sub_investigator → synthesizer | synthesizer) → END
 
 The five-way fan-out uses LangGraph's :class:`~langgraph.types.Send` API via
 a conditional edge function whose body emits one ``Send`` per investigator
@@ -12,9 +13,9 @@ patches merge into shared state through the ``operator.add`` reducer on
 :class:`expertview.orchestration.state.ExpertViewState`.
 
 The dispatcher node itself is a no-op anchor; the routing function attached
-to its conditional edge does the fan-out work. Phase 4 will extend that
-routing function with a sixth target for dynamically spawned
-sub-investigations.
+to its conditional edge does the fan-out work. The explicit spawning join waits
+for the five investigator branches to merge before evaluating the predicate
+that may route to a dynamically spawned sub-investigation.
 """
 
 import os
@@ -32,6 +33,7 @@ from expertview.agents.investigators.human_factors import (
 )
 from expertview.agents.investigators.mechanical import make_mechanical_investigator_node
 from expertview.agents.investigators.process import make_process_investigator_node
+from expertview.agents.investigators.sub_investigator import make_sub_investigator_node
 from expertview.agents.investigators.supply_chain import (
     make_supply_chain_investigator_node,
 )
@@ -40,6 +42,7 @@ from expertview.agents.llms import (
     create_investigator_llm,
     create_synthesizer_llm,
 )
+from expertview.agents.spawning import is_bearing_anomaly
 from expertview.agents.synthesizer import make_synthesizer_node
 from expertview.orchestration.state import ExpertViewState
 from expertview.rag.domains.environmental import load_environmental_store
@@ -58,6 +61,8 @@ PROCESS_NODE: Final = "process"
 SUPPLY_CHAIN_NODE: Final = "supply_chain"
 ENVIRONMENTAL_NODE: Final = "environmental"
 HUMAN_FACTORS_NODE: Final = "human_factors"
+SPAWNING_JOIN_NODE: Final = "spawning_join"
+SUB_INVESTIGATOR_NODE: Final = "sub_investigator"
 SYNTHESIZER_NODE: Final = "synthesizer"
 
 INVESTIGATOR_NODES: Final[tuple[str, ...]] = (
@@ -89,6 +94,10 @@ async def _dispatcher_node(_state: ExpertViewState) -> dict[str, object]:
     return {}
 
 
+async def _spawning_join_node(_state: ExpertViewState) -> dict[str, object]:
+    return {}
+
+
 def _dispatcher_fanout(state: ExpertViewState) -> list[Send]:
     # Each investigator branch starts from the same incident and contributes
     # its findings back through the ``operator.add`` reducer on
@@ -97,8 +106,14 @@ def _dispatcher_fanout(state: ExpertViewState) -> list[Send]:
     return [Send(node, state) for node in INVESTIGATOR_NODES]
 
 
+def _should_spawn(state: ExpertViewState) -> str:
+    if any(is_bearing_anomaly(finding) for finding in state["findings"]):
+        return SUB_INVESTIGATOR_NODE
+    return SYNTHESIZER_NODE
+
+
 def make_graph() -> CompiledStateGraph:
-    """Compile the Phase 3 graph: dispatcher fans out to five investigators."""
+    """Compile the graph: five investigators, optional sub-investigator, synthesis."""
     _configure_langsmith_tracing()
 
     embeddings = create_embeddings()
@@ -116,15 +131,22 @@ def make_graph() -> CompiledStateGraph:
     supply_chain_node = make_supply_chain_investigator_node(supply_chain_store, investigator_llm)
     environmental_node = make_environmental_investigator_node(environmental_store, investigator_llm)
     human_factors_node = make_human_factors_investigator_node(human_factors_store, investigator_llm)
+    sub_investigator_node = make_sub_investigator_node(
+        "supply_chain",
+        supply_chain_store,
+        investigator_llm,
+    )
     synthesizer_node = make_synthesizer_node(synthesizer_llm)
 
     graph = StateGraph(ExpertViewState)
     graph.add_node(DISPATCHER_NODE, _dispatcher_node)
+    graph.add_node(SPAWNING_JOIN_NODE, _spawning_join_node)
     graph.add_node(MECHANICAL_NODE, mechanical_node)
     graph.add_node(PROCESS_NODE, process_node)
     graph.add_node(SUPPLY_CHAIN_NODE, supply_chain_node)
     graph.add_node(ENVIRONMENTAL_NODE, environmental_node)
     graph.add_node(HUMAN_FACTORS_NODE, human_factors_node)
+    graph.add_node(SUB_INVESTIGATOR_NODE, sub_investigator_node)
     graph.add_node(SYNTHESIZER_NODE, synthesizer_node)
 
     graph.add_edge(START, DISPATCHER_NODE)
@@ -134,7 +156,16 @@ def make_graph() -> CompiledStateGraph:
         list(INVESTIGATOR_NODES),
     )
     for investigator in INVESTIGATOR_NODES:
-        graph.add_edge(investigator, SYNTHESIZER_NODE)
+        graph.add_edge(investigator, SPAWNING_JOIN_NODE)
+    graph.add_conditional_edges(
+        SPAWNING_JOIN_NODE,
+        _should_spawn,
+        {
+            SUB_INVESTIGATOR_NODE: SUB_INVESTIGATOR_NODE,
+            SYNTHESIZER_NODE: SYNTHESIZER_NODE,
+        },
+    )
+    graph.add_edge(SUB_INVESTIGATOR_NODE, SYNTHESIZER_NODE)
     graph.add_edge(SYNTHESIZER_NODE, END)
 
     return graph.compile()

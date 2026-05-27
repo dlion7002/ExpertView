@@ -267,3 +267,15 @@ This entry **supersedes**:
 **Alternatives considered**: Full GitFlow with `develop`, `release/*`, and `hotfix/*` branches (rejected — useful for teams maintaining multiple production versions, unnecessary here); direct commits to `main` (rejected — weak review and traceability story); branch-per-phase without PRs (rejected — planning is visible, but integration discipline is not).
 
 **Reversibility**: Easy. If ExpertView later becomes a multi-release product with more contributors, the project can introduce a heavier release strategy. Until then, the lightweight workflow is the honest fit.
+
+---
+
+## 2026-05-27 - Explicit spawning join for Phase 4 conditional routing
+
+**Decision**: Phase 4 Task 2 wires dynamic spawning through an explicit `spawning_join` LangGraph node. The five investigator branches all route to this no-op join, the join evaluates `_should_spawn(state)`, and the conditional edge routes to either `sub_investigator` or `synthesizer`.
+
+**Why**: The bearing-anomaly predicate must read the merged `findings` list after all five parallel investigator branches have contributed their patches. A named join makes that topology visible in code, tests, and Mermaid output, and gives Phase 5 a stable extension point for richer conditional routing.
+
+**Alternatives considered**: Direct conditional routing from each investigator output (rejected - easier to misread as pre-merge routing and harder to test); attaching conditional routing to the dispatcher fan-out (rejected - the dispatcher state does not contain investigator findings yet).
+
+**Reversibility**: Easy. The join node is no-op and isolated to `orchestration/runner.py`; it can be replaced with a more compact LangGraph idiom if future LangGraph versions expose a clearer post-fan-out conditional primitive.
