@@ -1,0 +1,12 @@
+id: imm-fill-drift-2026-05-26-changeover
+summary: Injection-molding line 4 running light, dimensionally low parts after a 2026-05-26 product changeover, with the loaded recipe revision not matching the press setup sheet.
+observed_at: "2026-05-26T14:20:00-05:00"
+symptoms:
+  - Average shot weight trending 1.8% under nominal on parts run since the 2026-05-26 product changeover.
+  - Critical seal-diameter dimension drifting toward the low side of tolerance on the changed-over part.
+  - Short-shot and sink-mark rejects rising on the outer cavities (cavities 6 and 8) after the changeover.
+  - Setup sheet laminated at the press did not match the recipe revision loaded on the controller at the 2026-05-26 changeover.
+affected_assets:
+  - imm-line-4
+  - imm-line-4-press-04
+  - mold-tool-mt-l4-09
