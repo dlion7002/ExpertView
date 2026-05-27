@@ -19,8 +19,9 @@ to keep the OpenRouter credit unspent and to remove the network dependency
 from RAG ingest.
 """
 
+import asyncio
 import os
-from typing import Final
+from typing import Final, Protocol
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
@@ -34,6 +35,36 @@ INVESTIGATOR_MODEL_ID: Final = "openrouter/owl-alpha"
 DEFAULT_SYNTHESIZER_MODEL_ID: Final = "deepseek/deepseek-v4-flash:free"
 
 EMBEDDING_MODEL_NAME: Final = "BAAI/bge-small-en-v1.5"
+
+# The cap of 5 deliberately matches the dispatcher's fan-out width: all five
+# investigator branches can dispatch in parallel, but Phase 4's spawned
+# sub-investigations will queue rather than amplifying OpenRouter free-tier
+# rate-limit pressure.
+INVESTIGATOR_CONCURRENCY: Final = 5
+_INVESTIGATOR_SEMAPHORE = asyncio.Semaphore(INVESTIGATOR_CONCURRENCY)
+
+
+class _InvokableLlm(Protocol):
+    async def ainvoke(self, input: str) -> object: ...
+
+
+class ThrottledInvestigatorLlm:
+    """Async wrapper that gates investigator calls through a shared semaphore.
+
+    Investigator nodes accept any object satisfying their ``InvestigatorLlm``
+    protocol (``async def ainvoke(self, input: str) -> object``). Wrapping the
+    real ``ChatOpenAI`` here keeps the throttle invisible to the orchestration
+    layer and satisfies the architecture rule that LLM-client concerns live
+    only in ``agents/llms.py``.
+    """
+
+    def __init__(self, llm: _InvokableLlm, semaphore: asyncio.Semaphore) -> None:
+        self._llm = llm
+        self._semaphore = semaphore
+
+    async def ainvoke(self, input: str) -> object:
+        async with self._semaphore:
+            return await self._llm.ainvoke(input)
 
 
 def _required_env(name: str) -> str:
@@ -54,14 +85,15 @@ def create_investigator_llm(
     *,
     temperature: float = 0.0,
     max_tokens: int | None = None,
-) -> ChatOpenAI:
-    return ChatOpenAI(
+) -> ThrottledInvestigatorLlm:
+    llm = ChatOpenAI(
         model=INVESTIGATOR_MODEL_ID,
         base_url=OPENROUTER_BASE_URL,
         api_key=_required_env(OPENROUTER_API_KEY_ENV),
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    return ThrottledInvestigatorLlm(llm, _INVESTIGATOR_SEMAPHORE)
 
 
 def create_synthesizer_llm(

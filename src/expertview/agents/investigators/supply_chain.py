@@ -9,10 +9,14 @@ from typing import Protocol
 from pydantic import TypeAdapter
 
 from expertview.evidence.models import Document, Finding, Incident
+from expertview.log import get_logger
 from expertview.orchestration.state import ExpertViewState
 from expertview.rag.base import KnowledgeStore
 
 __all__ = ["make_supply_chain_investigator_node"]
+
+_LOGGER = get_logger("expertview.investigator")
+_DOMAIN = "supply_chain"
 
 _PROMPT_PATH = Path(__file__).parents[2] / "prompts" / "investigator" / "supply_chain.md"
 _FINDINGS_ADAPTER = TypeAdapter(list[Finding])
@@ -39,11 +43,13 @@ def make_supply_chain_investigator_node(
         state: ExpertViewState,
     ) -> dict[str, list[Finding]]:
         incident = state["incident"]
+        _LOGGER.info("investigator.start", domain=_DOMAIN, incident_id=incident.id)
         documents = store.search(_incident_query(incident), k=k)
         prompt = _render_prompt(prompt_template, incident, documents)
         response = await llm.ainvoke(prompt)
         findings = _parse_findings(_response_text(response))
         _validate_findings(findings, documents)
+        _LOGGER.info("investigator.finish", domain=_DOMAIN, finding_count=len(findings))
         return {"findings": findings}
 
     return supply_chain_investigator_node
