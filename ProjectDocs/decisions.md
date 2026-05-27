@@ -354,3 +354,34 @@ for importable DTOs).
 tests. If a future LangGraph version changes stream shape, update
 `stream_run(...)` and its tests without touching the graph topology, agents,
 CLI, UI, prompts, or provider factory.
+
+---
+
+## 2026-05-27 - Phase 6 Streamlit demo surface dependencies and Mermaid renderer
+
+**Decision**: Phase 6 Task 2 adds two runtime dependencies:
+`streamlit>=1.41` for the single-screen demo app and
+`streamlit-mermaid>=0.3.0` for rendering the LangGraph Mermaid topology inside
+the Streamlit surface. The app lives under `src/expertview/ui/` as a top-level
+entry-point layer alongside `cli.py`, imports only orchestration and evidence
+models, and uses `render_topology_mermaid(make_graph())` rather than a hand-drawn
+diagram.
+
+**Why**: Streamlit was already locked as the demo surface because it is the
+lowest-friction way to show incident input, live investigator progress, topology,
+and the causal report in one screen. The Task 2 implementation needs the package
+as a runtime dependency rather than a dev-only tool. Current official Streamlit
+docs document `st.fragment` in the 1.41 API line, but no official `st.mermaid`
+API was found; `streamlit-mermaid` provides the small missing renderer without
+forcing the project into custom HTML or a JavaScript asset pipeline.
+
+**Alternatives considered**: Add only Streamlit and show raw Mermaid source if
+`st.mermaid` is absent (rejected - the Phase 6 gate requires a visible topology,
+not source text); custom HTML or CDN Mermaid JavaScript inside Streamlit
+(rejected - more moving parts and a weaker dependency story than a focused
+component); defer the renderer until Task 3 (rejected - Task 2 owns the watched
+demo surface).
+
+**Reversibility**: Easy. The dependencies are isolated to `src/expertview/ui/`.
+If Streamlit later gains an official Mermaid renderer, replace the component call
+in the UI helper and remove `streamlit-mermaid` from `pyproject.toml`.
