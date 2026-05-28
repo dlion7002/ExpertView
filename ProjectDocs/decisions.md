@@ -473,3 +473,29 @@ The **parallel dispatcher is deliberately left unchanged**. It always activates 
 - *Rewrite the convergence causal-chain rebuild to preserve LLM contributing-factor links* (out of scope — the user confirmed the symptoms-explained section is fine; the new narrative references the full picture instead of restructuring the chain).
 
 **Reversibility**: Easy. The two `CausalReport` fields are additive and defaulted; the reasoning prompt is a versioned file under `prompts/synthesizer/`; the second pass is isolated to the synthesizer node body and reverting it (plus the two render blocks) restores the prior single-pass behavior. The two convergence helpers are pure and independently unit-tested. Cost: one extra LLM call per synthesis on the demo path (accepted by the user; reuses the same synthesizer model, no new dependency).
+
+---
+
+## 2026-05-28 — Phase 7 Task 1: LLM hardening (retry/backoff, synthesizer seed, embedding cache contract)
+
+**Decision**: `agents/llms.py` gains a `RetryingLlm` async wrapper composed with the existing factories so every `ChatOpenAI` call goes through a bounded retry loop (max **3 attempts**, exponential backoff base **1s** × multiplier **2.0** capped at **8s** with full-jitter `random.uniform(0.5, 1.0)`, `Retry-After` honored when present). The wrapper retries on HTTP **429** and **5xx**, re-raises immediately on any other 4xx, and re-raises the last exception on cap exhaustion. Status detection reads attributes off the exception (`status_code` → `response.status_code` → `code`) rather than `isinstance` against `langchain-openai` / `openai` SDK exception hierarchies, with a logged warning + non-retryable treatment for exceptions whose status cannot be extracted.
+
+**Composition order**: investigator factory returns `ThrottledInvestigatorLlm(RetryingLlm(ChatOpenAI(...)), _INVESTIGATOR_SEMAPHORE)` — semaphore *outside* retry — so Phase 3's concurrency cap gates entry before any retry loop holds a slot. Synthesizer factory returns `RetryingLlm(ChatOpenAI(..., seed=SYNTHESIZER_SEED))` with no semaphore (single-call).
+
+**Deterministic seed**: `SYNTHESIZER_SEED: Final = 17` is passed as a first-class constructor kwarg on the synthesizer `ChatOpenAI` (the installed `langchain-openai` exposes `seed` directly, so `model_kwargs` nesting is unnecessary). Seed is **synthesizer-only** — investigators at `temperature=0.0` already vary minimally, and the synthesizer is the call whose text the demo reads. The constant's comment documents the best-effort caveat: OpenRouter routing may select an upstream provider that ignores the seed.
+
+**Embedding cache invariant**: `create_embeddings()` carries a docstring section formalizing the cache invalidation rule — `EMBEDDING_MODEL_NAME` is the cache key for every per-domain index under `src/expertview/rag/domains/` (`mechanical.py`, `process.py`, `supply_chain.py`, `environmental.py`, `human_factors.py`); changing the model name requires manually deleting `.cache/rag/` before the next run. Documentation-only contract, not enforced at runtime.
+
+**Test seam**: `RetryingLlm.__init__` accepts an injected `sleep: SleepFn = asyncio.sleep` callable so unit tests pass an instantaneous fake; the rng is also injectable. 8 unit tests cover 429-retry-success, 5xx-retry-success, 400-no-retry, cap exhaustion, `Retry-After` honored, unknown-exception non-retryable, seed propagation, and composition order — all offline, all deterministic, no network.
+
+**Why**: [build_plan.md §Phase 7](build_plan.md) requires retry/backoff against OpenRouter 429s/5xx (top in-event risk on the rate-limited free tier), a deterministic seed for reproducibility, and a formal embedding cache-invalidation rule. All three live inside `agents/llms.py` per the architecture rule that LLM-client concerns are confined to that module — concentrating them there means no node code under `agents/investigators/*` or `agents/synthesizer.py` is touched, and the [[task-3-paid-synth-rehearsal-and-readme]] paid-frontier swap inherits resilience automatically when the user fires it.
+
+**Alternatives considered**:
+- *Match exception types via `isinstance(openai.RateLimitError | openai.APIStatusError)`* (rejected — `langchain-openai` bumps the upstream `openai` SDK between versions and the hierarchy shifts; raw status-code matching is more robust to that drift, at the cost of a permissive catch-all that the wrapper logs explicitly).
+- *Pass `seed` via `model_kwargs={"seed": 17}`* (rejected — the installed `langchain-openai` accepts `seed` as a first-class kwarg, so the nested form adds no robustness and reads less directly).
+- *Apply the seed to investigators too* (deferred — synthesizer-only is the minimum that buys demo-text reproducibility; investigators at `temperature=0.0` are already mostly stable and adding the seed would broaden the surface where an upstream silently ignores it).
+- *Patch `asyncio.sleep` globally in tests via `unittest.mock`* (rejected — injecting the sleep callable on the constructor reads cleaner and avoids global side effects from a `monkeypatch` on a stdlib symbol).
+- *Add `tenacity` as a dependency to host the retry policy* (rejected — `CLAUDE.md` hard rule forbids silent dependency adds; the wrapper is small enough that hand-rolled `asyncio.sleep` + status extraction is the right call).
+- *Automatic cache invalidation in `rag/domains/*` loaders on `EMBEDDING_MODEL_NAME` change* (out of scope for v1 — the rule is a developer-time contract, not a runtime concern; the loaders already key cache files by model identity so stale entries simply miss and get rewritten).
+
+**Reversibility**: Easy. `RetryingLlm` is a single class with no callers outside the two factories; reverting the factory composition and deleting the class restores the prior direct-`ChatOpenAI` surface. The seed kwarg is one line. The cache-invalidation docstring is documentation. No dependency churn, no node-code churn.
