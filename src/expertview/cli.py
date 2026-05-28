@@ -36,6 +36,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from expertview.agents.llms import (
+    DEFAULT_SYNTHESIZER_MODEL_ID,
+    OPENROUTER_API_KEY_ENV,
+    SYNTHESIZER_MODEL_ENV,
+    create_embeddings,
+)
 from expertview.evidence.models import CausalReport, Finding, Hypothesis, Incident
 from expertview.orchestration.runner import (
     DISPATCHER_NODE,
@@ -69,6 +75,14 @@ EXPERTVIEW_SYNTH_MODEL_ENV: Final = "EXPERTVIEW_SYNTH_MODEL"
 _TRACE_SIZE_WARN_BYTES: Final = 256 * 1024
 _TRACE_LIST_LOOKBACK_HOURS: Final = 24
 _TRACE_CHILD_NAMES: Final = (*INVESTIGATOR_NODES, SUB_INVESTIGATOR_NODE)
+
+# Doctor pre-flight: incidents the runbook fires against. Tests monkeypatch this
+# tuple to simulate missing/corrupt YAMLs without touching disk.
+_DOCTOR_INCIDENT_PATHS: tuple[Path, ...] = (
+    Path("data/incidents/cnc_out_of_tolerance.yaml"),
+    Path("data/incidents/process_recipe_drift.yaml"),
+)
+_DOCTOR_EMBEDDING_PROBE: Final = "ping"
 # Allow-list assembly never grabs run.extra or child inputs; this regex is the
 # second line of defense that fails an export loudly if any allow-listed value
 # happens to nest a key that smells like a credential.
@@ -87,6 +101,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_trace_export(run_id=args.run_id, out_path=args.out)
     if args.command == "replay":
         return _run_replay(args.trace)
+    if args.command == "doctor":
+        return _run_doctor(
+            skip_embedding=args.skip_embedding,
+            skip_langsmith=args.skip_langsmith,
+        )
 
     parser.print_help(sys.stderr)
     return 2
@@ -178,6 +197,25 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Path to a JSON artifact produced by `expertview trace-export`.",
+    )
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help=(
+            "Pre-flight check before a paid-synth rehearsal: env vars, incident YAMLs, "
+            "Streamlit deps, embedding round-trip, LangSmith connectivity, "
+            "trace subcommands registered."
+        ),
+    )
+    doctor.add_argument(
+        "--skip-embedding",
+        action="store_true",
+        help="Skip the local embedding round-trip check (~2s, requires the model cache).",
+    )
+    doctor.add_argument(
+        "--skip-langsmith",
+        action="store_true",
+        help="Skip the LangSmith client connectivity check (~2s, requires network).",
     )
 
     return parser
@@ -773,6 +811,171 @@ def _render_replay_notice(trace_path: Path, artifact: dict[str, Any], console: C
     )
     if run_url:
         console.print(f"[dim]Original LangSmith trace: {run_url}[/dim]")
+
+
+_DOCTOR_PASS: Final = "pass"
+_DOCTOR_FAIL: Final = "fail"
+_DOCTOR_INFO: Final = "info"
+_DOCTOR_SKIP: Final = "skip"
+
+
+def _run_doctor(*, skip_embedding: bool, skip_langsmith: bool) -> int:
+    console = Console(legacy_windows=False)
+    results: list[tuple[str, str, str]] = []
+
+    results.append(_doctor_check_env(OPENROUTER_API_KEY_ENV, required=True))
+    results.append(_doctor_check_env(LANGSMITH_API_KEY_ENV, required=True))
+    results.append(_doctor_check_synth_model())
+    results.append(_doctor_check_incident_yamls())
+    results.append(_doctor_check_streamlit_imports())
+    results.append(
+        _doctor_check_embedding_roundtrip()
+        if not skip_embedding
+        else ("Embedding round-trip", _DOCTOR_SKIP, "Skipped via --skip-embedding.")
+    )
+    results.append(
+        _doctor_check_langsmith_client()
+        if not skip_langsmith
+        else ("LangSmith connectivity", _DOCTOR_SKIP, "Skipped via --skip-langsmith.")
+    )
+    results.append(_doctor_check_trace_subcommands())
+
+    table = Table(title="ExpertView doctor", show_lines=False, expand=True)
+    table.add_column("Check", overflow="fold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Detail", overflow="fold")
+    for name, status, detail in results:
+        table.add_row(name, _doctor_status_cell(status), detail, style=_doctor_row_style(status))
+    console.print(table)
+
+    failures = [(name, detail) for name, status, detail in results if status == _DOCTOR_FAIL]
+    if failures:
+        console.print("[bold red]Doctor found problems:[/bold red]")
+        for name, detail in failures:
+            console.print(f"  - [red]{name}[/red]: {detail}")
+        return 1
+    console.print("[green]All non-skipped checks passed.[/green]")
+    return 0
+
+
+def _doctor_check_env(name: str, *, required: bool) -> tuple[str, str, str]:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return (f"{name} set", _DOCTOR_PASS, "non-empty")
+    label = "required" if required else "recommended"
+    return (
+        f"{name} set",
+        _DOCTOR_FAIL,
+        f"{name} is empty or unset — {label} for the rehearsal.",
+    )
+
+
+def _doctor_check_synth_model() -> tuple[str, str, str]:
+    value = os.environ.get(SYNTHESIZER_MODEL_ENV, "").strip()
+    if not value:
+        return (
+            f"{SYNTHESIZER_MODEL_ENV}",
+            _DOCTOR_INFO,
+            f"unset → defaults to {DEFAULT_SYNTHESIZER_MODEL_ID} (build-phase free synth).",
+        )
+    return (f"{SYNTHESIZER_MODEL_ENV}", _DOCTOR_INFO, f"set to {value!r}.")
+
+
+def _doctor_check_incident_yamls() -> tuple[str, str, str]:
+    failures: list[str] = []
+    for path in _DOCTOR_INCIDENT_PATHS:
+        try:
+            _load_incident(path)
+        except (FileNotFoundError, ValidationError, yaml.YAMLError, OSError) as exc:
+            failures.append(f"{path}: {exc.__class__.__name__}")
+    if failures:
+        return ("Incident YAMLs parse", _DOCTOR_FAIL, "; ".join(failures))
+    paths = ", ".join(str(p) for p in _DOCTOR_INCIDENT_PATHS)
+    return ("Incident YAMLs parse", _DOCTOR_PASS, f"validated: {paths}")
+
+
+def _doctor_check_streamlit_imports() -> tuple[str, str, str]:
+    try:
+        import streamlit  # noqa: F401
+        import streamlit_mermaid  # noqa: F401
+    except ImportError as exc:
+        return (
+            "Streamlit deps import",
+            _DOCTOR_FAIL,
+            f"{exc.__class__.__name__}: {exc}. Run `uv sync` to install runtime deps.",
+        )
+    return ("Streamlit deps import", _DOCTOR_PASS, "streamlit + streamlit-mermaid import OK")
+
+
+def _doctor_check_embedding_roundtrip() -> tuple[str, str, str]:
+    try:
+        embeddings = create_embeddings()
+        vector = embeddings.embed_query(_DOCTOR_EMBEDDING_PROBE)
+    except Exception as exc:
+        return (
+            "Embedding round-trip",
+            _DOCTOR_FAIL,
+            f"{exc.__class__.__name__}: {exc}",
+        )
+    if not vector:
+        return ("Embedding round-trip", _DOCTOR_FAIL, "embed_query returned an empty vector.")
+    return ("Embedding round-trip", _DOCTOR_PASS, f"vector length {len(vector)}")
+
+
+def _doctor_check_langsmith_client() -> tuple[str, str, str]:
+    try:
+        client = LangSmithClient()
+        projects = list(client.list_projects(limit=1))
+    except Exception as exc:
+        return ("LangSmith connectivity", _DOCTOR_FAIL, f"{exc.__class__.__name__}: {exc}")
+    return (
+        "LangSmith connectivity",
+        _DOCTOR_PASS,
+        f"list_projects(limit=1) returned {len(projects)} row(s).",
+    )
+
+
+def _doctor_check_trace_subcommands() -> tuple[str, str, str]:
+    parser = _build_parser()
+    registered = _registered_subcommands(parser)
+    missing = [name for name in ("trace-export", "replay") if name not in registered]
+    if missing:
+        return (
+            "Trace subcommands present",
+            _DOCTOR_FAIL,
+            f"missing: {', '.join(missing)}",
+        )
+    return (
+        "Trace subcommands present",
+        _DOCTOR_PASS,
+        "trace-export and replay registered.",
+    )
+
+
+def _registered_subcommands(parser: argparse.ArgumentParser) -> set[str]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return set(action.choices.keys())
+    return set()
+
+
+def _doctor_status_cell(status: str) -> Text:
+    label = {
+        _DOCTOR_PASS: "PASS",
+        _DOCTOR_FAIL: "FAIL",
+        _DOCTOR_INFO: "INFO",
+        _DOCTOR_SKIP: "SKIP",
+    }.get(status, status.upper())
+    return Text(label, style=_doctor_row_style(status))
+
+
+def _doctor_row_style(status: str) -> str:
+    return {
+        _DOCTOR_PASS: "green",
+        _DOCTOR_FAIL: "red",
+        _DOCTOR_INFO: "cyan",
+        _DOCTOR_SKIP: "dim",
+    }.get(status, "dim")
 
 
 if __name__ == "__main__":
