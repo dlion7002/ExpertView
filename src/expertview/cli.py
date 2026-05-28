@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 import yaml
@@ -37,6 +40,7 @@ from expertview.evidence.models import CausalReport, Finding, Hypothesis, Incide
 from expertview.orchestration.runner import (
     DISPATCHER_NODE,
     HUMAN_FACTORS_NODE,
+    INVESTIGATOR_NODES,
     LANGSMITH_API_KEY_ENV,
     LANGSMITH_PROJECT_ENV,
     LANGSMITH_TRACING_ENV,
@@ -60,6 +64,16 @@ from expertview.orchestration.streaming import (
 
 _CONFIDENCE_BAR_WIDTH: Final = 24
 
+TRACE_ARTIFACT_SCHEMA_VERSION: Final = 1
+EXPERTVIEW_SYNTH_MODEL_ENV: Final = "EXPERTVIEW_SYNTH_MODEL"
+_TRACE_SIZE_WARN_BYTES: Final = 256 * 1024
+_TRACE_LIST_LOOKBACK_HOURS: Final = 24
+_TRACE_CHILD_NAMES: Final = (*INVESTIGATOR_NODES, SUB_INVESTIGATOR_NODE)
+# Allow-list assembly never grabs run.extra or child inputs; this regex is the
+# second line of defense that fails an export loudly if any allow-listed value
+# happens to nest a key that smells like a credential.
+_SECRET_KEY_PATTERN: Final = re.compile(r"(?i)(api[_-]?key|authorization|bearer|secret|token)")
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     _maybe_load_env_file()
@@ -69,6 +83,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "demo":
         return asyncio.run(_run_demo(args.incident, live=args.live))
+    if args.command == "trace-export":
+        return _run_trace_export(run_id=args.run_id, out_path=args.out)
+    if args.command == "replay":
+        return _run_replay(args.trace)
 
     parser.print_help(sys.stderr)
     return 2
@@ -123,6 +141,43 @@ def _build_parser() -> argparse.ArgumentParser:
             "Stream investigator progress live in the terminal as each LangGraph "
             "node completes, then render the final report (mirrors the Streamlit surface)."
         ),
+    )
+
+    export = subparsers.add_parser(
+        "trace-export",
+        help=(
+            "Snapshot a LangSmith run to a JSON artifact under data/traces/ so the "
+            "demo can be replayed offline if the venue network or OpenRouter fails."
+        ),
+    )
+    export.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help=(
+            "LangSmith run ID (UUID) to export. If omitted, the most recent root run "
+            f"in LANGSMITH_PROJECT from the last {_TRACE_LIST_LOOKBACK_HOURS}h is used."
+        ),
+    )
+    export.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output JSON path (typically data/traces/<incident>__<model>__<UTC>.json).",
+    )
+
+    replay = subparsers.add_parser(
+        "replay",
+        help=(
+            "Re-render a captured CausalReport from a saved LangSmith trace artifact. "
+            "Pure presentation — no graph invocation, no OpenRouter call, no embedding load."
+        ),
+    )
+    replay.add_argument(
+        "--trace",
+        type=Path,
+        required=True,
+        help="Path to a JSON artifact produced by `expertview trace-export`.",
     )
 
     return parser
@@ -454,6 +509,270 @@ def _safe_run_url(run_id: UUID) -> str | None:
         return LangSmithClient().read_run(run_id).url
     except Exception:
         return None
+
+
+def _run_trace_export(*, run_id: str | None, out_path: Path) -> int:
+    console = Console(legacy_windows=False)
+
+    api_key = os.environ.get(LANGSMITH_API_KEY_ENV, "").strip()
+    if not api_key:
+        console.print(
+            f"[bold red]{LANGSMITH_API_KEY_ENV} is not set; cannot read a LangSmith "
+            "run. Set it (and LANGSMITH_PROJECT) and try again.[/bold red]"
+        )
+        return 1
+
+    project = (os.environ.get(LANGSMITH_PROJECT_ENV, "") or "default").strip() or "default"
+
+    try:
+        client = LangSmithClient()
+    except Exception as exc:
+        console.print(f"[bold red]Failed to construct LangSmithClient:[/bold red] {exc}")
+        return 1
+
+    if run_id is None:
+        resolved = _resolve_latest_run_id(client, project, console)
+        if resolved is None:
+            return 1
+        run_uuid = resolved
+    else:
+        try:
+            run_uuid = UUID(run_id)
+        except ValueError:
+            console.print(f"[bold red]--run-id is not a valid UUID: {run_id!r}[/bold red]")
+            return 1
+
+    try:
+        run = client.read_run(run_uuid, load_child_runs=True)
+    except Exception as exc:
+        console.print(f"[bold red]Failed to read run {run_uuid}:[/bold red] {exc}")
+        return 1
+
+    try:
+        artifact = _build_artifact(run, project=project)
+        _redact_or_raise(artifact)
+        payload = json.dumps(artifact, indent=2, default=str)
+    except RuntimeError as exc:
+        console.print(f"[bold red]Refusing to write artifact:[/bold red] {exc}")
+        return 1
+    except Exception as exc:
+        console.print(f"[bold red]Failed to assemble artifact:[/bold red] {exc}")
+        return 1
+
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        console.print(f"[bold red]Failed to write artifact to {out_path}:[/bold red] {exc}")
+        return 1
+
+    size_bytes = len(payload.encode("utf-8"))
+    if size_bytes > _TRACE_SIZE_WARN_BYTES:
+        print(
+            f"Warning: trace artifact is {size_bytes // 1024} KB. "
+            "CLAUDE.md hard rules forbid committing generated data >1 MB; keep "
+            "data/traces/ small (one or two artifacts at a time).",
+            file=sys.stderr,
+        )
+
+    console.print(f"[green]Exported trace[/green] {run_uuid} -> {out_path}")
+    return 0
+
+
+def _resolve_latest_run_id(client: LangSmithClient, project: str, console: Console) -> UUID | None:
+    since = datetime.now(UTC) - timedelta(hours=_TRACE_LIST_LOOKBACK_HOURS)
+    list_kwargs: dict[str, Any] = {
+        "project_name": project,
+        "is_root": True,
+        "filter": f'gte(start_time, "{since.isoformat()}")',
+    }
+    try:
+        candidates = list(client.list_runs(**list_kwargs))
+    except Exception as exc:
+        console.print(f"[bold red]Failed to list runs in project '{project}':[/bold red] {exc}")
+        return None
+
+    if not candidates:
+        console.print(
+            f"[bold red]No root runs found in project '{project}' in the last "
+            f"{_TRACE_LIST_LOOKBACK_HOURS}h. Pass --run-id explicitly.[/bold red]"
+        )
+        return None
+
+    candidates.sort(key=lambda r: getattr(r, "start_time", datetime.min), reverse=True)
+    latest = candidates[0]
+    latest_id = getattr(latest, "id", None)
+    latest_start = getattr(latest, "start_time", None)
+    if latest_id is None:
+        console.print(
+            f"[bold red]Latest run in '{project}' has no id attribute; cannot "
+            "auto-resolve. Pass --run-id explicitly.[/bold red]"
+        )
+        return None
+
+    print(
+        f"No --run-id provided; using latest root run {latest_id} "
+        f"(start_time={latest_start}). Re-run with --run-id <uuid> to pin a different one.",
+        file=sys.stderr,
+    )
+    return latest_id if isinstance(latest_id, UUID) else UUID(str(latest_id))
+
+
+def _build_artifact(run: object, *, project: str) -> dict[str, Any]:
+    outputs = getattr(run, "outputs", None) or {}
+    inputs = getattr(run, "inputs", None) or {}
+    child_runs = getattr(run, "child_runs", None) or []
+
+    return {
+        "schema_version": TRACE_ARTIFACT_SCHEMA_VERSION,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "langsmith": {
+            "project": project,
+            "run_id": str(getattr(run, "id", "")),
+            "run_name": getattr(run, "name", None),
+            "run_url": getattr(run, "url", None),
+            "start_time": _iso_or_none(getattr(run, "start_time", None)),
+            "end_time": _iso_or_none(getattr(run, "end_time", None)),
+            "status": getattr(run, "status", None),
+            "error": getattr(run, "error", None),
+        },
+        "synthesizer_model": os.environ.get(EXPERTVIEW_SYNTH_MODEL_ENV),
+        "incident": inputs.get("incident"),
+        "causal_report": _extract_causal_report(outputs),
+        "findings_by_domain": _extract_findings_by_domain(child_runs),
+        "child_run_summaries": _extract_child_summaries(child_runs),
+    }
+
+
+def _iso_or_none(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return None
+    return str(value)
+
+
+def _extract_causal_report(outputs: dict[str, Any] | None) -> dict[str, Any] | None:
+    # LangGraph typically emits {"causal_report": {...}} as the run's outputs;
+    # in some compile paths the bare report dict has surfaced at the root. Handle
+    # both shapes so a small library bump does not silently break replay.
+    if not outputs:
+        return None
+    nested = outputs.get("causal_report")
+    if isinstance(nested, dict):
+        return nested
+    if "incident_id" in outputs and "top_hypotheses" in outputs:
+        return dict(outputs)
+    return None
+
+
+def _extract_findings_by_domain(child_runs: Iterable[object]) -> dict[str, list[Any]]:
+    result: dict[str, list[Any]] = {}
+    for child in child_runs:
+        name = getattr(child, "name", None)
+        if name not in _TRACE_CHILD_NAMES:
+            continue
+        outputs = getattr(child, "outputs", None) or {}
+        findings = outputs.get("findings")
+        if findings:
+            result[name] = list(findings)
+    return result
+
+
+def _extract_child_summaries(child_runs: Iterable[object]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for child in child_runs:
+        summaries.append(
+            {
+                "name": getattr(child, "name", None),
+                "run_type": getattr(child, "run_type", None),
+                "status": getattr(child, "status", None),
+                "error": getattr(child, "error", None),
+                "start_time": _iso_or_none(getattr(child, "start_time", None)),
+                "end_time": _iso_or_none(getattr(child, "end_time", None)),
+            }
+        )
+    return summaries
+
+
+def _redact_or_raise(node: object) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str) and _SECRET_KEY_PATTERN.search(key):
+                raise RuntimeError(
+                    f"artifact contains a key that looks like a secret: {key!r}. "
+                    "Allow-list the field explicitly or drop it before export."
+                )
+            _redact_or_raise(value)
+    elif isinstance(node, list):
+        for item in node:
+            _redact_or_raise(item)
+
+
+def _run_replay(trace_path: Path) -> int:
+    console = Console(legacy_windows=False)
+
+    try:
+        text = trace_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        console.print(f"[bold red]Trace artifact not found: {trace_path}[/bold red]")
+        return 1
+    except OSError as exc:
+        console.print(f"[bold red]Failed to read {trace_path}:[/bold red] {exc}")
+        return 1
+
+    try:
+        artifact = json.loads(text)
+    except json.JSONDecodeError as exc:
+        console.print(f"[bold red]Invalid JSON in {trace_path}:[/bold red] {exc}")
+        return 1
+
+    if not isinstance(artifact, dict):
+        console.print(f"[bold red]Trace artifact at {trace_path} is not a JSON object.[/bold red]")
+        return 1
+
+    causal_report_raw = artifact.get("causal_report")
+    if causal_report_raw is None:
+        console.print(
+            f"[bold red]Trace artifact at {trace_path} has no captured causal_report; "
+            "nothing to replay.[/bold red]"
+        )
+        return 1
+
+    try:
+        report = CausalReport.model_validate(causal_report_raw)
+    except ValidationError as exc:
+        console.print(f"[bold red]Captured CausalReport failed validation:[/bold red]\n{exc}")
+        return 1
+
+    _render_report(report, console)
+    _render_replay_notice(trace_path, artifact, console)
+    return 0
+
+
+def _render_replay_notice(trace_path: Path, artifact: dict[str, Any], console: Console) -> None:
+    langsmith = artifact.get("langsmith") if isinstance(artifact, dict) else None
+    langsmith = langsmith if isinstance(langsmith, dict) else {}
+    run_id = langsmith.get("run_id")
+    project = langsmith.get("project")
+    run_url = langsmith.get("run_url")
+    exported_at = artifact.get("exported_at") if isinstance(artifact, dict) else None
+
+    detail_bits: list[str] = []
+    if run_id:
+        detail_bits.append(f"captured run {run_id}")
+    if project:
+        detail_bits.append(f"project '{project}'")
+    if exported_at:
+        detail_bits.append(f"exported {exported_at}")
+    detail = "; ".join(detail_bits) if detail_bits else "captured run"
+
+    console.print(
+        f"[yellow](replay from {trace_path})[/yellow] {detail}. "
+        "No live OpenRouter or LangSmith calls."
+    )
+    if run_url:
+        console.print(f"[dim]Original LangSmith trace: {run_url}[/dim]")
 
 
 if __name__ == "__main__":
