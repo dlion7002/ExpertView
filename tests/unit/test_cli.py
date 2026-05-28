@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import pytest
 from rich.console import Console
 
-from expertview.cli import _build_parser, _status_table, _stream_demo_live
+from expertview.cli import _build_parser, _render_report, _status_table, _stream_demo_live
 from expertview.evidence.models import CausalReport, Finding, Hypothesis, Incident
 from expertview.orchestration.runner import (
     DISPATCHER_NODE,
@@ -24,7 +24,7 @@ from expertview.orchestration.runner import (
     SYNTHESIZER_NODE,
 )
 from expertview.orchestration.state import ExpertViewState
-from expertview.orchestration.streaming import NODE_LABELS
+from expertview.orchestration.streaming import NODE_LABELS, SpawnDecision, initial_status
 
 _OBSERVED_AT = datetime(2026, 5, 27, 10, 0, tzinfo=UTC)
 
@@ -121,8 +121,38 @@ async def test_live_path_returns_terminal_report_from_fake_stream() -> None:
     assert result == report
 
 
+def test_render_report_shows_reasoning_and_alternatives() -> None:
+    report = _report().model_copy(
+        update={
+            "verdict_reasoning": "A spindle bearing fault explains the bore drift and chatter.",
+            "alternatives_summary": (
+                "Vibration was ruled out below threshold; the handover gap only delayed detection."
+            ),
+        }
+    )
+    console = Console(record=True, width=200)
+
+    _render_report(report, console)
+    rendered = console.export_text()
+
+    assert "Why this is the root cause" in rendered
+    assert "spindle bearing fault explains the bore drift" in rendered
+    assert "What else was considered" in rendered
+    assert "Vibration was ruled out below threshold" in rendered
+
+
+def test_render_report_omits_reasoning_panels_when_absent() -> None:
+    console = Console(record=True, width=200)
+
+    _render_report(_report(), console)
+    rendered = console.export_text()
+
+    assert "Why this is the root cause" not in rendered
+    assert "What else was considered" not in rendered
+
+
 def test_status_table_marks_completed_nodes() -> None:
-    status_by_node = {node_name: "Waiting" for node_name in NODE_LABELS}
+    status_by_node = initial_status()
     status_by_node[MECHANICAL_NODE] = "Complete"
 
     console = Console(record=True, width=100)
@@ -132,3 +162,21 @@ def test_status_table_marks_completed_nodes() -> None:
     assert NODE_LABELS[MECHANICAL_NODE] in rendered
     assert NODE_LABELS[SYNTHESIZER_NODE] in rendered
     assert "3 findings" in rendered
+
+
+def test_status_table_renders_detail_and_spawn_reason() -> None:
+    status_by_node = initial_status()
+    status_by_node[MECHANICAL_NODE] = "Complete"
+    status_by_node[SPAWNING_JOIN_NODE] = "Complete"
+    findings_by_node = {MECHANICAL_NODE: [_finding("mechanical", "bearing chatter detected")]}
+    spawn_decision = SpawnDecision(
+        spawned=True,
+        reason="Bearing anomaly found - spawned a supply-chain sub-investigation.",
+    )
+
+    console = Console(record=True, width=200)
+    console.print(_status_table(status_by_node, 1, findings_by_node, spawn_decision))
+    rendered = console.export_text()
+
+    assert "bearing chatter detected" in rendered
+    assert "spawned a supply-chain sub-investigation" in rendered

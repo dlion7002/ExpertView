@@ -4,7 +4,13 @@ from itertools import pairwise
 
 from expertview.evidence.models import CausalLink, Finding, Hypothesis, Incident, Symptom
 
-__all__ = ["link_causes", "score_hypothesis", "weight_finding"]
+__all__ = [
+    "corroborating_domains",
+    "link_causes",
+    "mean_evidence_weight",
+    "score_hypothesis",
+    "weight_finding",
+]
 
 _CITATION_LIFT = 0.03
 _MAX_CITATION_LIFT = 0.12
@@ -28,6 +34,28 @@ def weight_finding(finding: Finding) -> float:
     # Citation lift rewards externally anchored evidence without baking in incident domains.
     citation_lift = min(len(finding.citations) * _CITATION_LIFT, _MAX_CITATION_LIFT)
     return _clamp(finding.confidence + citation_lift)
+
+
+def corroborating_domains(hypothesis: Hypothesis) -> tuple[str, ...]:
+    """Distinct investigator domains backing a hypothesis (origin first, then sorted).
+
+    The deterministic "breadth" half of the hybrid reasoning surface: how many
+    independent domains corroborate the cause. Mirrors the domain set
+    `score_hypothesis` uses, so the rendered/explained breadth matches the score.
+    """
+    others = sorted(
+        {finding.investigator_domain for finding in hypothesis.supporting_findings}
+        - {hypothesis.domain_origin}
+    )
+    return (hypothesis.domain_origin, *others)
+
+
+def mean_evidence_weight(hypothesis: Hypothesis) -> float:
+    """Mean citation-lifted evidence weight across a hypothesis's findings (0.0 if none)."""
+    findings = hypothesis.supporting_findings
+    if not findings:
+        return 0.0
+    return _round_confidence(sum(weight_finding(finding) for finding in findings) / len(findings))
 
 
 def score_hypothesis(hypothesis: Hypothesis) -> Hypothesis:

@@ -385,3 +385,91 @@ demo surface).
 **Reversibility**: Easy. The dependencies are isolated to `src/expertview/ui/`.
 If Streamlit later gains an official Mermaid renderer, replace the component call
 in the UI helper and remove `streamlit-mermaid` from `pyproject.toml`.
+
+---
+
+## 2026-05-27 — ProgressEvent enriched with per-node findings + SpawnDecision; surface-agnostic advance_status flow helper
+
+**Decision**: `orchestration/streaming.py` gains (a) a frozen `SpawnDecision`
+(`spawned`, `reason`) model; (b) two additive `ProgressEvent` fields —
+`findings: list[Finding]` (the findings the node contributed) and
+`spawn_decision: SpawnDecision | None` (set only on the spawning-join event,
+derived by reusing `agents.spawning.is_bearing_anomaly` over the accumulated
+findings); and (c) the live-flow status vocabulary `WAITING / ACTIVE / COMPLETE
+/ SKIPPED` plus `initial_status()` and `advance_status(status, event)`. Both the
+Streamlit app and the CLI live mode consume these same events and the same flow
+helper, so the two surfaces share one source of truth for live status
+transitions and per-agent detail.
+
+**Why**: Phase 6's watched-demo gate surfaced three legibility gaps (static
+topology, no per-agent transparency, fact-dump report). Centralizing the flow
+transitions and the spawn rationale in the surface-agnostic streaming core lets
+both surfaces recolor the topology live, show what each investigator found, and
+state why the sub-investigation did or did not spawn — without duplicating the
+runner topology in each UI or letting them drift.
+
+**Alternatives considered**: Encode the active/skipped transitions separately in
+each surface (rejected — guarantees drift and duplicates the runner topology by
+hand twice); re-derive the spawn decision in the UI from raw findings (rejected —
+would re-implement the predicate and risk disagreeing with the routing the graph
+actually took, so `streaming.py` reuses `is_bearing_anomaly` instead); put the
+flow helper in the UI layer (rejected — the CLI needs it too and the UI wall
+forbids the CLI importing `ui/`).
+
+**Reversibility**: Easy. The `ProgressEvent` fields are additive with safe
+defaults (`[]` / `None`), so existing callers stay valid; `advance_status` is
+presentation-only and never affects graph routing. Reverting means dropping the
+fields and the helper and restoring the prior flat status loop in each surface.
+
+---
+
+## 2026-05-27 — Demo UI uses heavier injected CSS over the dark theme
+
+**Decision**: The Streamlit demo surface is polished with a centralized injected
+CSS block (`ui/render.py::inject_css`) — styled header band, bordered status
+cards with per-status left accents, badge pills, a colored topology legend, and a
+verdict-first report "hero" — layered on top of the existing dark-graphite+amber
+theme in `.streamlit/config.toml`. Per-status colors are kept visually aligned
+with `_STATUS_MERMAID_STYLE` so badges, card accents, the legend, the graph, and
+the CLI status colors all read as one design. The CLI live table mirrors the
+grouping (section dividers) and adds state glyphs (ASCII fallback on cp1252).
+
+**Why**: Interview/demo legibility is the primary success measure (CV asset). The
+prior legibility fix made the demo *readable*; this makes it *attractive* and
+easy to scan at a glance — clear section boundaries, a prominent conclusion, and
+less wall-of-text. Native Streamlit primitives alone could not deliver the
+card/badge/hero polish requested.
+
+**Alternatives considered**: Native components + light CSS only (rejected by the
+user in favor of more polish); a tabbed layout (rejected — hides live progress
+during a walkthrough); leaving the CLI untouched (rejected — Phase 6 established
+Plan-B parity between the two surfaces).
+
+**Reversibility**: Easy. All custom styling is isolated in `inject_css` and a few
+HTML-builder helpers; removing them falls back to plain bordered containers and
+native text. The `:has()`/testid-based card accent degrades gracefully (cards
+stay bordered and legible) if a future Streamlit bump changes the internal testid.
+
+---
+
+## 2026-05-27 — Two-pass synthesizer: deductive reasoning narrative grounded in the deterministic scores
+
+**Decision**: The synthesizer node gains a **second LLM pass** dedicated to explanation. Pass 1 drafts hypotheses + links and convergence re-scores them as before (numbers unchanged, still deterministic). Pass 2 sends the *re-scored* report back to the same synthesizer LLM with a new versioned prompt (`prompts/synthesizer/reasoning.md`) and asks **only** for two strings, added to `CausalReport` (both `""`-defaulted so existing constructors stay valid):
+
+- `verdict_reasoning` — why the top hypothesis is the originating root cause (the deductive step the live panel never explained).
+- `alternatives_summary` — **one comparative paragraph** on what else was considered and why it is not the originating cause (lower-ranked hypotheses, ruled-out evidence, contributing-factor gaps). Empty string allowed when there is nothing to contrast.
+
+The pass-2 prompt is fed the deterministic "math" half via two new pure helpers in `evidence/convergence.py` — `corroborating_domains` (breadth) and `mean_evidence_weight` (depth) — so the narrative is grounded in the final scores rather than the LLM's pre-scoring guesses. The same two helpers drive a "Backed by N findings across M domains" basis caption in both surfaces. Both surfaces (`ui/render.py`, `cli.py`) render the two narrative fields; the single-hypothesis case (the common one) now shows the comparative paragraph where it previously showed nothing. The node stays side-effect-free; pass-2 output is validated at the boundary against a local `_ReasoningNarrative` pydantic model (malformed → raises, no fallback).
+
+The **parallel dispatcher is deliberately left unchanged**. It always activates all five investigators and takes no decision, so the user chose to treat that stage honestly as a deterministic fan-out and *not* surface a fabricated dispatch rationale. The originally-planned streaming-layer `DispatchDecision` (Section A of the plan) is dropped.
+
+**Why**: The demo's final report previously discarded the reasoning it had already gathered — it collapsed to a single originating hypothesis, dropped the other four investigators' verdicts (incl. the environmental rule-out and the process/human-factors contributing gaps), and stated the verdict + confidence with no deductive justification and no "what was discarded." The deductive material lived in `state["findings"]` but never reached the reader, so the flow read as unjustified. Splitting explanation into a second pass is what lets the narrative reference the **final** re-scored numbers (pass 1 cannot, because re-scoring happens after it) while keeping convergence the sole owner of the numbers — the same "LLM proposes, convergence owns the numbers" split the 2026-05-27 Phase 5 Task 3 decision established, extended to "LLM also explains, grounded in those numbers." Model output quality was explicitly not the concern; the missing layer was the explanation itself.
+
+**Alternatives considered**:
+- *LLM-authored narrative in a single pass* (rejected — pass 1 only sees its own advisory confidences, so the prose can contradict the re-scored ranking; the user chose the hybrid grounded-in-final-numbers option).
+- *Deterministic-only narrative templated from convergence signals* (rejected — reproducible but reads mechanical, not like genuine deduction; the user chose math + LLM).
+- *Per-alternative rejection lines* (rejected — the user chose one comparative paragraph; lighter and reads better in the common single-hypothesis case).
+- *Surface a dispatcher rationale via the streaming layer, mirroring `SpawnDecision`* (rejected by the user — the dispatcher genuinely decides nothing, so showing a rationale would oversell a deterministic fan-out).
+- *Rewrite the convergence causal-chain rebuild to preserve LLM contributing-factor links* (out of scope — the user confirmed the symptoms-explained section is fine; the new narrative references the full picture instead of restructuring the chain).
+
+**Reversibility**: Easy. The two `CausalReport` fields are additive and defaulted; the reasoning prompt is a versioned file under `prompts/synthesizer/`; the second pass is isolated to the synthesizer node body and reverting it (plus the two render blocks) restores the prior single-pass behavior. The two convergence helpers are pure and independently unit-tested. Cost: one extra LLM call per synthesis on the demo path (accepted by the user; reuses the same synthesizer model, no new dependency).
