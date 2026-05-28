@@ -89,4 +89,12 @@ class CausalReport(BaseModel):
     top_hypotheses: list[Hypothesis] = Field(default_factory=list)
     causal_chain: list[CausalLink] = Field(default_factory=list)
     confidence_summary: str
+    # Deductive narrative written by the synthesizer's second (reasoning) pass,
+    # grounded in the deterministic re-scored confidences. `verdict_reasoning`
+    # explains *why* the top hypothesis is the conclusion; `alternatives_summary`
+    # is the one comparative paragraph on what else was considered and why it was
+    # not the originating cause. Defaulted to "" so non-synthesizer constructors
+    # (tests, streaming fixtures) stay valid.
+    verdict_reasoning: str = ""
+    alternatives_summary: str = ""
     generated_at: datetime = Field(default_factory=_utc_now)

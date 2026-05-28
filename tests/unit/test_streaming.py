@@ -11,13 +11,26 @@ import pytest
 from expertview.evidence.models import CausalReport, Finding, Incident
 from expertview.orchestration.runner import (
     DISPATCHER_NODE,
+    INVESTIGATOR_NODES,
     MECHANICAL_NODE,
     SPAWNING_JOIN_NODE,
     SUB_INVESTIGATOR_NODE,
     SYNTHESIZER_NODE,
 )
 from expertview.orchestration.state import ExpertViewState
-from expertview.orchestration.streaming import NODE_LABELS, render_topology_mermaid, stream_run
+from expertview.orchestration.streaming import (
+    ACTIVE,
+    COMPLETE,
+    NODE_LABELS,
+    SKIPPED,
+    WAITING,
+    ProgressEvent,
+    SpawnDecision,
+    advance_status,
+    initial_status,
+    render_topology_mermaid,
+    stream_run,
+)
 
 _OBSERVED_AT = datetime(2026, 5, 27, 10, 0, tzinfo=UTC)
 
@@ -152,6 +165,74 @@ async def test_stream_run_yields_events_in_node_completion_order_and_passes_conf
     assert [event.findings_count for event in events] == [0, 1, 1, 3, 3]
     assert events[-1].causal_report == report
     assert all(event.status == "completed" for event in events)
+    # Each event carries the findings *that node* contributed (not the running total).
+    assert [len(event.findings) for event in events] == [0, 1, 0, 2, 0]
+    assert events[1].findings[0].claim == "bearing chatter"
+    # The spawn decision rides only on the join event; "bearing chatter" trips the predicate.
+    join_event = events[2]
+    assert join_event.spawn_decision is not None
+    assert join_event.spawn_decision.spawned is True
+    assert all(
+        event.spawn_decision is None for event in events if event.node_name != SPAWNING_JOIN_NODE
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_run_marks_no_spawn_when_findings_lack_bearing_anomaly() -> None:
+    updates: list[dict[str, dict[str, object] | None]] = [
+        {DISPATCHER_NODE: None},
+        {MECHANICAL_NODE: {"findings": [_finding("mechanical", "spindle thermal drift")]}},
+        {SPAWNING_JOIN_NODE: None},
+        {SYNTHESIZER_NODE: {"causal_report": _report()}},
+    ]
+    graph = _FakeCompiledGraph(updates=updates)
+
+    events = await _collect_events(graph, _initial_state())
+
+    join_event = next(event for event in events if event.node_name == SPAWNING_JOIN_NODE)
+    assert join_event.spawn_decision is not None
+    assert join_event.spawn_decision.spawned is False
+
+
+def _progress_event(node_name: str, **kwargs: object) -> ProgressEvent:
+    return ProgressEvent(
+        node_name=node_name,
+        label=NODE_LABELS[node_name],
+        findings_count=0,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def test_advance_status_dispatcher_activates_investigators() -> None:
+    updated = advance_status(initial_status(), _progress_event(DISPATCHER_NODE))
+
+    assert updated[DISPATCHER_NODE] == COMPLETE
+    assert all(updated[node] == ACTIVE for node in INVESTIGATOR_NODES)
+
+
+def test_advance_status_join_skips_sub_investigator_when_not_spawned() -> None:
+    event = _progress_event(
+        SPAWNING_JOIN_NODE,
+        spawn_decision=SpawnDecision(spawned=False, reason="no anomaly"),
+    )
+
+    updated = advance_status(initial_status(), event)
+
+    assert updated[SPAWNING_JOIN_NODE] == COMPLETE
+    assert updated[SUB_INVESTIGATOR_NODE] == SKIPPED
+    assert updated[SYNTHESIZER_NODE] == ACTIVE
+
+
+def test_advance_status_join_activates_sub_investigator_when_spawned() -> None:
+    event = _progress_event(
+        SPAWNING_JOIN_NODE,
+        spawn_decision=SpawnDecision(spawned=True, reason="anomaly"),
+    )
+
+    updated = advance_status(initial_status(), event)
+
+    assert updated[SUB_INVESTIGATOR_NODE] == ACTIVE
+    assert updated[SYNTHESIZER_NODE] == WAITING
 
 
 @pytest.mark.asyncio

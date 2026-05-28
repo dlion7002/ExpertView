@@ -5,7 +5,13 @@ from math import isfinite
 
 import pytest
 
-from expertview.evidence.convergence import link_causes, score_hypothesis, weight_finding
+from expertview.evidence.convergence import (
+    corroborating_domains,
+    link_causes,
+    mean_evidence_weight,
+    score_hypothesis,
+    weight_finding,
+)
 from expertview.evidence.models import CausalLink, Finding, Hypothesis, Incident, Symptom
 
 _OBSERVED_AT = datetime(2026, 5, 27, 9, 0, tzinfo=UTC)
@@ -231,6 +237,41 @@ def test_link_causes_returns_deterministic_well_formed_links() -> None:
     terminal_links = [link for link in first if isinstance(link.effect, Symptom)]
     assert len(terminal_links) == 3
     assert {link.effect.description for link in terminal_links} == set(incident.symptoms[:3])
+
+
+def test_corroborating_domains_lists_origin_first_then_sorted_distinct() -> None:
+    hypothesis = _hypothesis(
+        "hyp-cross",
+        "mechanical",
+        [
+            _finding("supply_chain", "Supplier batch issue.", 0.8, ["sc-001"]),
+            _finding("mechanical", "Bearing fault.", 0.84, ["mech-001"]),
+            _finding("supply_chain", "Second supply finding.", 0.7, ["sc-002"]),
+        ],
+    )
+
+    assert corroborating_domains(hypothesis) == ("mechanical", "supply_chain")
+
+
+def test_corroborating_domains_includes_origin_with_no_findings() -> None:
+    assert corroborating_domains(_hypothesis("hyp-empty", "process", [])) == ("process",)
+
+
+def test_mean_evidence_weight_matches_weight_finding_mean() -> None:
+    findings = [
+        _finding("mechanical", "First.", 0.80, ["a", "b"]),
+        _finding("supply_chain", "Second.", 0.60, ["c"]),
+    ]
+    hypothesis = _hypothesis("hyp-mean", "mechanical", findings)
+
+    expected = sum(weight_finding(finding) for finding in findings) / len(findings)
+
+    assert mean_evidence_weight(hypothesis) == pytest.approx(expected, abs=1e-4)
+    assert 0.0 <= mean_evidence_weight(hypothesis) <= 1.0
+
+
+def test_mean_evidence_weight_is_zero_without_findings() -> None:
+    assert mean_evidence_weight(_hypothesis("hyp-empty", "process", [])) == 0.0
 
 
 def test_link_causes_returns_no_links_without_hypotheses() -> None:

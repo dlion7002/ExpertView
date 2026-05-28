@@ -17,13 +17,21 @@ class FakeResponse:
 
 
 class FakeLlm:
-    def __init__(self, content: str) -> None:
-        self.content = content
+    """Returns scripted responses in call order; repeats the last once exhausted.
+
+    The synthesizer now makes two passes (draft, then reasoning). Error-path tests
+    that fail in the first pass never request the second, so a single-response
+    construction still works for them; happy-path tests script both responses.
+    """
+
+    def __init__(self, *responses: str) -> None:
+        self.responses = list(responses)
         self.prompts: list[str] = []
 
     async def ainvoke(self, input: str) -> FakeResponse:
+        index = min(len(self.prompts), len(self.responses) - 1)
         self.prompts.append(input)
-        return FakeResponse(self.content)
+        return FakeResponse(self.responses[index])
 
 
 def _incident() -> Incident:
@@ -94,9 +102,19 @@ _FAKE_LLM_JSON = """
 """
 
 
+_FAKE_REASONING_JSON = (
+    '{"verdict_reasoning": '
+    '"Bearing chatter and brinelling, set against the hydraulic-service timeline, '
+    'point to a spindle bearing fault as the originating cause of the dimensional drift.", '
+    '"alternatives_summary": '
+    '"No competing originating cause surfaced; the remaining findings describe '
+    'the same mechanical chain rather than an independent root cause."}'
+)
+
+
 @pytest.mark.asyncio
 async def test_synthesizer_returns_causal_report_patch() -> None:
-    llm = FakeLlm(_FAKE_LLM_JSON)
+    llm = FakeLlm(_FAKE_LLM_JSON, _FAKE_REASONING_JSON)
     node = make_synthesizer_node(llm)
 
     patch = await node(_state())
@@ -125,15 +143,55 @@ async def test_synthesizer_returns_causal_report_patch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_synthesizer_populates_grounded_reasoning() -> None:
+    llm = FakeLlm(_FAKE_LLM_JSON, _FAKE_REASONING_JSON)
+    node = make_synthesizer_node(llm)
+
+    report = (await node(_state()))["causal_report"]
+
+    assert report.verdict_reasoning.startswith("Bearing chatter")
+    assert "competing originating cause" in report.alternatives_summary
+
+    # The reasoning pass is the *second* call and is grounded in the re-scored
+    # report (final confidence + ranking basis) and the full findings list.
+    assert len(llm.prompts) == 2
+    reasoning_prompt = llm.prompts[1]
+    assert "confidence" in reasoning_prompt.lower()
+    assert report.top_hypotheses[0].claim in reasoning_prompt
+    assert "mech-bearing-001" in reasoning_prompt
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_accepts_empty_alternatives_summary() -> None:
+    reasoning = '{"verdict_reasoning": "One clear originating cause.", "alternatives_summary": ""}'
+    node = make_synthesizer_node(FakeLlm(_FAKE_LLM_JSON, reasoning))
+
+    report = (await node(_state()))["causal_report"]
+
+    assert report.verdict_reasoning == "One clear originating cause."
+    assert report.alternatives_summary == ""
+
+
+@pytest.mark.asyncio
+async def test_synthesizer_rejects_malformed_reasoning() -> None:
+    node = make_synthesizer_node(FakeLlm(_FAKE_LLM_JSON, "not a reasoning object"))
+
+    with pytest.raises(ValueError):
+        await node(_state())
+
+
+@pytest.mark.asyncio
 async def test_synthesizer_strips_markdown_json_fence() -> None:
-    fenced = f"```json\n{_FAKE_LLM_JSON.strip()}\n```"
-    node = make_synthesizer_node(FakeLlm(fenced))
+    fenced_report = f"```json\n{_FAKE_LLM_JSON.strip()}\n```"
+    fenced_reasoning = f"```json\n{_FAKE_REASONING_JSON.strip()}\n```"
+    node = make_synthesizer_node(FakeLlm(fenced_report, fenced_reasoning))
 
     patch = await node(_state())
 
     report = patch["causal_report"]
     assert isinstance(report, CausalReport)
     assert report.incident_id == "cnc-out-of-tolerance-2026-05-24"
+    assert report.verdict_reasoning.startswith("Bearing chatter")
 
 
 @pytest.mark.asyncio

@@ -23,22 +23,40 @@ from typing import Final
 from uuid import UUID
 
 import yaml
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tracers.run_collector import RunCollectorCallbackHandler
 from langsmith import Client as LangSmithClient
 from pydantic import ValidationError
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from expertview.evidence.models import CausalReport, Hypothesis, Incident
+from expertview.evidence.models import CausalReport, Finding, Hypothesis, Incident
 from expertview.orchestration.runner import (
+    DISPATCHER_NODE,
+    HUMAN_FACTORS_NODE,
     LANGSMITH_API_KEY_ENV,
     LANGSMITH_PROJECT_ENV,
     LANGSMITH_TRACING_ENV,
+    SPAWNING_JOIN_NODE,
+    SUB_INVESTIGATOR_NODE,
+    SYNTHESIZER_NODE,
     make_graph,
 )
 from expertview.orchestration.state import ExpertViewState
+from expertview.orchestration.streaming import (
+    ACTIVE,
+    COMPLETE,
+    NODE_LABELS,
+    SKIPPED,
+    WAITING,
+    SpawnDecision,
+    advance_status,
+    initial_status,
+    stream_run,
+)
 
 _CONFIDENCE_BAR_WIDTH: Final = 24
 
@@ -50,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "demo":
-        return asyncio.run(_run_demo(args.incident))
+        return asyncio.run(_run_demo(args.incident, live=args.live))
 
     parser.print_help(sys.stderr)
     return 2
@@ -98,11 +116,19 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to an incident YAML file (see data/incidents/).",
     )
+    demo.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "Stream investigator progress live in the terminal as each LangGraph "
+            "node completes, then render the final report (mirrors the Streamlit surface)."
+        ),
+    )
 
     return parser
 
 
-async def _run_demo(incident_path: Path) -> int:
+async def _run_demo(incident_path: Path, *, live: bool = False) -> int:
     console = Console(legacy_windows=False)
     try:
         incident = _load_incident(incident_path)
@@ -126,17 +152,18 @@ async def _run_demo(incident_path: Path) -> int:
     }
 
     collector = RunCollectorCallbackHandler()
+    config: RunnableConfig = {"callbacks": [collector]}
     try:
-        final_state = await compiled_graph.ainvoke(
-            initial_state,
-            config={"callbacks": [collector]},
-        )
+        if live:
+            report = await _stream_demo_live(compiled_graph, initial_state, config, console)
+        else:
+            final_state = await compiled_graph.ainvoke(initial_state, config=config)
+            report = final_state.get("causal_report") if isinstance(final_state, dict) else None
     except Exception:
         console.print("[bold red]Graph invocation failed:[/bold red]")
         console.print_exception()
         return 1
 
-    report = final_state.get("causal_report") if isinstance(final_state, dict) else None
     if not isinstance(report, CausalReport):
         console.print("[bold red]Graph completed without producing a CausalReport.[/bold red]")
         return 1
@@ -144,6 +171,123 @@ async def _run_demo(incident_path: Path) -> int:
     _render_report(report, console)
     _render_trace_notice(collector, console)
     return 0
+
+
+async def _stream_demo_live(
+    compiled_graph: object,
+    initial_state: ExpertViewState,
+    config: RunnableConfig,
+    console: Console,
+) -> CausalReport | None:
+    # The live view mirrors the Streamlit surface: one row per NODE_LABELS entry,
+    # flipping Waiting -> Active -> Complete (or Skipped) via the shared
+    # `advance_status` flow helper as each node's ProgressEvent arrives. rich.live
+    # is synchronous; stream_run is async — so the `async for` is driven inside this
+    # already-async coroutine (run once via asyncio.run in main), never a nested loop.
+    status_by_node = initial_status()
+    findings_by_node: dict[str, list[Finding]] = {}
+    findings_count = 0
+    spawn_decision: SpawnDecision | None = None
+    report: CausalReport | None = None
+
+    with Live(
+        _status_table(status_by_node, findings_count),
+        console=console,
+        refresh_per_second=8,
+    ) as live:
+        async for event in stream_run(compiled_graph, initial_state, config=config):  # type: ignore[arg-type]
+            status_by_node = advance_status(status_by_node, event)
+            findings_count = event.findings_count
+            if event.findings:
+                findings_by_node[event.node_name] = list(event.findings)
+            if event.spawn_decision is not None:
+                spawn_decision = event.spawn_decision
+            live.update(
+                _status_table(status_by_node, findings_count, findings_by_node, spawn_decision)
+            )
+            if event.causal_report is not None:
+                report = event.causal_report
+
+    return report
+
+
+def _status_table(
+    status_by_node: dict[str, str],
+    findings_count: int,
+    findings_by_node: dict[str, list[Finding]] | None = None,
+    spawn_decision: SpawnDecision | None = None,
+) -> Table:
+    findings_by_node = findings_by_node or {}
+    table = Table(
+        title=f"Investigation progress — {findings_count} findings so far",
+        show_lines=False,
+        expand=True,
+    )
+    table.add_column("Stage", overflow="fold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Detail", overflow="fold")
+    for node_name, label in NODE_LABELS.items():
+        status = status_by_node.get(node_name, WAITING)
+        stage = Text(label, style="strike" if status == SKIPPED else "")
+        detail = _status_detail(
+            node_name, status, findings_by_node.get(node_name, []), spawn_decision
+        )
+        table.add_row(stage, _status_cell(status), detail, style=_row_style(status))
+        # Divider lines mirror the Streamlit grouping: entry stage, the five
+        # parallel investigators, then the routing + synthesis stages.
+        if node_name in (DISPATCHER_NODE, HUMAN_FACTORS_NODE):
+            table.add_section()
+    return table
+
+
+def _status_detail(
+    node_name: str,
+    status: str,
+    node_findings: list[Finding],
+    spawn_decision: SpawnDecision | None,
+) -> Text:
+    if node_name == SPAWNING_JOIN_NODE and spawn_decision is not None:
+        return Text(spawn_decision.reason)
+    if node_name == SUB_INVESTIGATOR_NODE and status == SKIPPED:
+        return Text("Skipped — not triggered for this incident.")
+    if node_name == SYNTHESIZER_NODE and status == COMPLETE:
+        return Text("Merged all findings; converged on the causal report.")
+    if node_findings:
+        top = node_findings[0]
+        return Text(f"{len(node_findings)} finding(s): {top.claim}")
+    return Text("")
+
+
+def _status_cell(status: str) -> Text:
+    return Text(f"{_status_glyph(status)} {status}", style=_row_style(status))
+
+
+def _status_glyph(status: str) -> str:
+    done, active, waiting, skipped = _status_glyphs()
+    return {
+        COMPLETE: done,
+        ACTIVE: active,
+        WAITING: waiting,
+        SKIPPED: skipped,
+    }.get(status, waiting)
+
+
+def _status_glyphs() -> tuple[str, str, str, str]:
+    # Mirror the _bar_glyphs fallback: legacy cp1252 consoles cannot encode the
+    # filled/half/ring/cross glyphs, so degrade to ASCII when stdout is not UTF.
+    encoding = (sys.stdout.encoding or "").lower()
+    if encoding.startswith("utf"):
+        return ("●", "◐", "○", "⊘")
+    return ("*", ">", ".", "x")
+
+
+def _row_style(status: str) -> str:
+    return {
+        COMPLETE: "green",
+        ACTIVE: "yellow",
+        WAITING: "dim",
+        SKIPPED: "dim",
+    }.get(status, "dim")
 
 
 def _load_incident(path: Path) -> Incident:
@@ -168,7 +312,25 @@ def _render_report(report: CausalReport, console: Console) -> None:
         )
     )
 
+    if report.verdict_reasoning.strip():
+        console.print(
+            Panel(
+                Text(report.verdict_reasoning, justify="left"),
+                title="Why this is the root cause",
+                border_style="cyan",
+            )
+        )
+
     console.print(_top_hypotheses_table(report.top_hypotheses))
+
+    if report.alternatives_summary.strip():
+        console.print(
+            Panel(
+                Text(report.alternatives_summary, justify="left"),
+                title="What else was considered",
+                border_style="yellow",
+            )
+        )
 
     if report.causal_chain:
         console.print(_causal_chain_table(report))

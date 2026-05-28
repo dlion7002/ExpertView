@@ -1,0 +1,16 @@
+# ExpertView demo theme — dark graphite + amber.
+# Amber accent intentionally matches the live-topology "active" node color
+# (see ui/render.py _STATUS_MERMAID_STYLE), so the surface reads as one piece.
+# This is the supported theming path and is stable across Streamlit upgrades.
+[theme]
+base = "dark"
+primaryColor = "#f0a500"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1c2128"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[server]
+# Streamlit's watcher introspects imported modules; with transformers' lazy
+# imports that can probe optional vision modules and raise missing torchvision.
+fileWatcherType = "none"
