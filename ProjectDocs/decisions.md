@@ -499,3 +499,22 @@ The **parallel dispatcher is deliberately left unchanged**. It always activates 
 - *Automatic cache invalidation in `rag/domains/*` loaders on `EMBEDDING_MODEL_NAME` change* (out of scope for v1 — the rule is a developer-time contract, not a runtime concern; the loaders already key cache files by model identity so stale entries simply miss and get rewritten).
 
 **Reversibility**: Easy. `RetryingLlm` is a single class with no callers outside the two factories; reverting the factory composition and deleting the class restores the prior direct-`ChatOpenAI` surface. The seed kwarg is one line. The cache-invalidation docstring is documentation. No dependency churn, no node-code churn.
+
+---
+
+## 2026-09-09 — Editable incident panel in the Streamlit demo
+
+**Decision**: `render_incident()` in `ui/render.py` renders the incident as Streamlit input widgets (date, time, summary, symptoms, affected assets) and **returns the edited `Incident`** instead of returning `None` after painting read-only chips. `ui/app.py` rebinds `incident = render_incident(incident)` so the graph runs against what the operator sees on screen. Symptom and asset pickers are `st.multiselect(..., accept_new_options=True)` seeded from curated option pools spanning all five investigator domains, so the picker reads as an operator's vocabulary rather than a four-item demo list. Widget keys are namespaced with `incident.id` so switching incidents in the selector picks up the new YAML defaults instead of carrying stale edits across.
+
+**Dependency change**: `streamlit>=1.41` → `streamlit>=1.45` in `pyproject.toml`. `accept_new_options` on `st.multiselect` landed in Streamlit 1.45; the declared floor was understating what the code requires. The lockfile already resolved 1.57, so no installed version changes — this only stops a fresh resolve from picking a version that would raise `TypeError` at render time.
+
+**Why**: the demo previously ran one hard-coded YAML incident, which reads as a canned scenario. Letting a viewer retype the summary or add a symptom and re-run turns the same screen into evidence that the investigators actually respond to the input, at zero cost to the graph — the edit produces an ordinary `Incident`, and every node downstream is unchanged.
+
+**Boundary handling**: the edited timestamp is recombined with `incident.observed_at.tzinfo` so it keeps the YAML's original offset rather than going naive. An accidentally cleared summary falls back to the YAML value, since an empty summary would degrade every investigator prompt. Blank-only symptom and asset entries are stripped. `Incident.model_copy(update=...)` keeps the pydantic model as the cross-boundary type per the architecture rules.
+
+**Alternatives considered**:
+- *A separate "edit incident" expander below the read-only card* (rejected — two representations of the same incident on one screen, and the viewer has to discover the expander before the demo makes its point).
+- *Free-text inputs for symptoms and assets* (rejected — a curated pool with `accept_new_options=True` gives both: one-click plausible edits for a live demo, and arbitrary text when someone wants to type their own).
+- *Keep `render_incident()` returning `None` and read the edits back off `st.session_state`* (rejected — the widget keys would become an implicit contract between two modules; returning the value keeps the data flow explicit).
+
+**Reversibility**: Easy. The read-only path is one `git revert` away; it removed only `_chip_group()` and two CSS blocks. No node, state, or evidence-model code was touched.
