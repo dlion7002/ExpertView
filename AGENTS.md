@@ -1,4 +1,4 @@
-# ExpertView — Claude Code Operating Guide
+# ExpertView — Agent Operating Guide
 
 ## What this project is
 

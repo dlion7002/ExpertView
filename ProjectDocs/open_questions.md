@@ -6,7 +6,7 @@
 
 ---
 
-## Status as of 2026-05-25
+## Status as of 2026-05-25 (phase-0 question set)
 
 **All phase-0 open questions are resolved or formally deferred.** See [decisions.md](decisions.md) entries dated 2026-05-25 for:
 
@@ -16,13 +16,13 @@
 - **Q4 — Mock corpora generation strategy** → locked to hybrid (Claude drafts, user hand-curates for the planted causal-chain clues).
 - **Q5 — LLM provider budget tracking** → resolved 2026-05-26. The NIM + Anthropic two-provider plan was superseded by the OpenRouter pivot (see [decisions.md 2026-05-26](decisions.md)); budget tracking now happens via the OpenRouter dashboard against the user's $5 credit, and there is no separate NIM or Anthropic billing relationship to track. The original deferral is no longer load-bearing.
 
-Phase 1 (Skeleton + contracts) is unblocked. New questions arising during phase 1+ should be appended below per [workflow.md §6](workflow.md).
+The build ran to completion on these answers; phases 0-7 are all closed. New questions should be appended below per [workflow.md §6](workflow.md).
 
 ---
 
 ## Active questions
 
-*(none — append new questions here as they arise during phase 1+.)*
+*(none — the phase 0-7 build closed without leaving any open.)*
 
 ---
 
