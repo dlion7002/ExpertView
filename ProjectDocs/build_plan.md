@@ -2,9 +2,13 @@
 
 > **Build mode**: pre-hackathon, self-paced. ExpertView is constructed over multiple sessions *before* the event and brought to the hackathon already polished. Each phase below ends in a working, demoable state with its own quality gate. Do not advance to the next phase until the current phase's gate is green.
 
+> **Status as of 2026-09-09**: phases 0-7 are complete. Every gate below was cleared and the
+> system runs end to end from both the CLI and the Streamlit surface. This document is kept as
+> the record of how the build was sequenced and what each phase had to prove.
+
 ## Pre-hackathon build phases
 
-### Phase 0 — Foundations (this session, in progress)
+### Phase 0 — Foundations (complete)
 
 - **Outputs**: this `ProjectDocs/` set + rewritten `CLAUDE.md`.
 - **Quality gate**: user has reviewed [vision.md](vision.md) and [architecture.md](architecture.md) and confirmed they match intent. Open questions in [open_questions.md](open_questions.md) are answered or explicitly deferred with a documented reason. **Cleared 2026-05-25** — Q1 (Streamlit), Q2 (CNC out-of-tolerance scenario), Q3 (LangChain `InMemoryVectorStore`), and Q4 (hybrid mock corpora) are locked. **Updated 2026-05-26** — the multi-provider NIM + Anthropic plan was superseded by OpenRouter + local embeddings after the NIM free-tier endpoints failed against the user's key; see [decisions.md](decisions.md). The Q5 budget question is now answered by the $5 OpenRouter credit tracked in the OR dashboard. See [decisions.md](decisions.md) for resolutions.

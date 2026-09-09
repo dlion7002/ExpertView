@@ -89,15 +89,29 @@ class _FakeInvestigatorLlm:
         )
 
 
+# The synthesizer runs two passes: a draft CausalReport, then a grounded
+# reasoning narrative. The fakes below answer them in call order.
+_REASONING_NARRATIVE = {
+    "verdict_reasoning": "Fake narrative for the dynamic-spawning harness.",
+    "alternatives_summary": "",
+}
+
+
 class _FakeSynthesizerLlm:
     def __init__(self, incident_id: str, events: list[str]) -> None:
         self._incident_id = incident_id
         self._events = events
         self.prompts: list[str] = []
+        self._calls = 0
 
     async def ainvoke(self, input: str) -> _FakeResponse:
-        self._events.append("synthesizer")
+        self._calls += 1
         self.prompts.append(input)
+        if self._calls > 1:
+            return _FakeResponse(json.dumps(_REASONING_NARRATIVE))
+        # Recorded once per node visit, not once per LLM call, so the event
+        # log stays a record of graph order.
+        self._events.append("synthesizer")
         report = {
             "incident_id": self._incident_id,
             "top_hypotheses": [

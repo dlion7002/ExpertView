@@ -68,7 +68,7 @@ def main() -> None:
         st.error(f"Failed to load incident: {exc}")
         return
 
-    render_incident(incident)
+    incident = render_incident(incident)
     status_slot, topology_slot = _render_run_region()
     report_slot = st.empty()
 

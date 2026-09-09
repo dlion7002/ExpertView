@@ -88,11 +88,25 @@ class _FakeInvestigatorLlm:
         )
 
 
+# The synthesizer runs two passes: a draft CausalReport, then a grounded
+# reasoning narrative. The fakes below answer them in call order.
+_REASONING_NARRATIVE = {
+    "verdict_reasoning": "Fake narrative for the parallel-fanout harness.",
+    "alternatives_summary": "",
+}
+
+
 class _FakeSynthesizerLlm:
+    """Answers the synthesizer's two passes in call order: draft, then narrative."""
+
     def __init__(self, incident_id: str) -> None:
         self._incident_id = incident_id
+        self._calls = 0
 
     async def ainvoke(self, input: str) -> _FakeResponse:
+        self._calls += 1
+        if self._calls > 1:
+            return _FakeResponse(json.dumps(_REASONING_NARRATIVE))
         report = {
             "incident_id": self._incident_id,
             "top_hypotheses": [

@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
@@ -37,6 +38,45 @@ from expertview.orchestration.streaming import (
 )
 
 _SNIPPET_CHARS: Final = 280
+
+# Curated option pools to populate the incident-edit dropdowns beyond just the
+# loaded YAML. Spread across the five investigator domains (mechanical, process,
+# supply chain, environmental, human factors) so the picker feels like a real
+# operator's vocabulary, not a 4-item demo list.
+_COMMON_SYMPTOM_OPTIONS: Final[tuple[str, ...]] = (
+    "Bore diameter drifting out of tolerance on finished parts.",
+    "Audible chatter during the roughing pass.",
+    "Light surface finish banding on machined parts.",
+    "Post-maintenance clamp-settle oscillation observed.",
+    "Spindle vibration trending up after warm-up.",
+    "Coolant temperature drifting above setpoint mid-shift.",
+    "Average shot weight trending under nominal after changeover.",
+    "Short-shot and sink-mark rejects rising on outer cavities.",
+    "Setup sheet does not match controller recipe revision.",
+    "Cycle time creeping up on the affected line.",
+    "Recent batch of bearings from a substitute supplier.",
+    "Lot traceability mismatch between MES and goods-receipt.",
+    "Ambient humidity in the cell above the controlled band.",
+    "Compressed-air dewpoint excursion logged overnight.",
+    "Shift-3 operator report of unusual tool wear.",
+    "Inconsistent operator handover notes for the affected line.",
+    "Recent CMMS work order closed without root-cause notes.",
+)
+_COMMON_ASSET_OPTIONS: Final[tuple[str, ...]] = (
+    "cnc-line-2",
+    "cnc-line-2-cnc-04",
+    "spindle-04",
+    "hydraulic-cylinder-hc-l2-17",
+    "imm-line-4",
+    "imm-line-4-press-04",
+    "mold-tool-mt-l4-09",
+    "bearing-batch-bb-2026-05",
+    "coolant-loop-cl-3",
+    "compressed-air-header-ah-2",
+    "hvac-zone-cell-b",
+    "mes-recipe-store",
+    "qa-cmm-station-2",
+)
 
 # status → CSS class suffix; drives the badge pills and the per-card left accent.
 _STATUS_CLASS: Final[Mapping[str, str]] = {
@@ -104,23 +144,69 @@ def build_citation_index(corpus_root: Path) -> dict[str, list[CitationSource]]:
     return index
 
 
-def render_incident(incident: Incident) -> None:
+def render_incident(incident: Incident) -> Incident:
+    """Render the incident as editable widgets and return the (possibly edited) value.
+
+    Widget keys are namespaced with ``incident.id`` so switching incidents in the
+    selector picks up the new YAML defaults instead of carrying old edits over.
+    """
+
     with st.container(border=True):
         st.markdown(
             '<span class="ev-card-marker ev-card-marker--incident"></span>', unsafe_allow_html=True
         )
-        _section_header("Incident", subtitle=f"Observed {incident.observed_at.isoformat()}")
-        st.markdown(
-            f'<div class="ev-incident-summary">{html.escape(incident.summary)}</div>',
-            unsafe_allow_html=True,
+        _section_header("Incident", subtitle="Observed")
+        date_col, time_col = st.columns(2)
+        with date_col:
+            edited_date = st.date_input(
+                "Observed date",
+                value=incident.observed_at.date(),
+                key=f"ev-incident-date-{incident.id}",
+            )
+        with time_col:
+            edited_time = st.time_input(
+                "Observed time",
+                value=incident.observed_at.time(),
+                key=f"ev-incident-time-{incident.id}",
+            )
+        edited_summary = st.text_area(
+            "Summary",
+            value=incident.summary,
+            key=f"ev-incident-summary-{incident.id}",
+            height=80,
         )
         left, right = st.columns(2)
         with left:
-            st.markdown(_chip_group("Symptoms", incident.symptoms), unsafe_allow_html=True)
-        with right:
-            st.markdown(
-                _chip_group("Affected assets", incident.affected_assets), unsafe_allow_html=True
+            edited_symptoms = st.multiselect(
+                "Symptoms",
+                options=_merge_options(incident.symptoms, _COMMON_SYMPTOM_OPTIONS),
+                default=list(incident.symptoms),
+                accept_new_options=True,
+                key=f"ev-incident-symptoms-{incident.id}",
             )
+        with right:
+            edited_assets = st.multiselect(
+                "Affected assets",
+                options=_merge_options(incident.affected_assets, _COMMON_ASSET_OPTIONS),
+                default=list(incident.affected_assets),
+                accept_new_options=True,
+                key=f"ev-incident-assets-{incident.id}",
+            )
+
+    # Preserve the YAML's tzinfo so the edited timestamp keeps the original
+    # offset (e.g. -05:00) rather than going naive. Empty summary breaks
+    # investigator prompts, so an accidental clear falls back to the YAML value.
+    edited_observed_at = datetime.combine(
+        edited_date, edited_time, tzinfo=incident.observed_at.tzinfo
+    )
+    return incident.model_copy(
+        update={
+            "observed_at": edited_observed_at,
+            "summary": edited_summary.strip() or incident.summary,
+            "symptoms": [s.strip() for s in edited_symptoms if s.strip()],
+            "affected_assets": [a.strip() for a in edited_assets if a.strip()],
+        }
+    )
 
 
 def style_topology_mermaid(mermaid: str, status_by_node: Mapping[str, str]) -> str:
@@ -486,12 +572,10 @@ def _status_row_html(label: str, status: str, detail: str | None) -> str:
     )
 
 
-def _chip_group(label: str, items: Iterable[str]) -> str:
-    chips = "".join(f'<span class="ev-chip">{html.escape(item)}</span>' for item in items)
-    return (
-        f'<div class="ev-chip-label">{html.escape(label)}</div>'
-        f'<div class="ev-chip-group">{chips}</div>'
-    )
+def _merge_options(incident_values: Sequence[str], pool: Sequence[str]) -> list[str]:
+    """Return incident values first, then pool entries not already in the list."""
+
+    return list(dict.fromkeys((*incident_values, *pool)))
 
 
 def _render_citation_chips(citations: Iterable[str]) -> None:
