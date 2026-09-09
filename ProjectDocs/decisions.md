@@ -518,3 +518,22 @@ The **parallel dispatcher is deliberately left unchanged**. It always activates 
 - *Keep `render_incident()` returning `None` and read the edits back off `st.session_state`* (rejected — the widget keys would become an implicit contract between two modules; returning the value keeps the data flow explicit).
 
 **Reversibility**: Easy. The read-only path is one `git revert` away; it removed only `_chip_group()` and two CSS blocks. No node, state, or evidence-model code was touched.
+
+---
+
+## 2026-09-09 — Repository presentation cleanup for public reading
+
+**Decision**: the published repo carries the system and the reasoning behind it, not the record of how it was assembled. Removed `ProjectDocs/phases/` (35 agent task-breakdowns), `ProjectDocs/plans/` (8 implementation plans), `ProjectDocs/runbooks/`, `ProjectDocs/Guides/phase-1/`, the loose `.pr-body-phase-7-*.md` drafts, and `.claude/skills/phase-task-breakdown/`. Flattened `ProjectDocs/Guides/getting-started.md` to `ProjectDocs/getting-started.md`. Untracked `.claude/settings.local.json` (machine-specific absolute paths) and git-ignored `ProjectDocs/Guides/AppFlow/`. Dropped the six `.gitkeep` files from `data/` folders that now hold real corpora.
+
+**Kept deliberately**: `CLAUDE.md` and `AGENTS.md` stay in the repo and are now linked from the README. The agent operating contract — hard rules, architecture invariants, the decision-logging loop — is part of what this project demonstrates, so hiding it would remove signal rather than noise. `ProjectDocs/workflow.md`, `branching_strategy.md` and `open_questions.md` stay because the CI repository-health job asserts the first two exist and the workflow rules reference the third.
+
+**Why**: a reader arriving cold needs the problem, the shape of the solution, and the reasoning behind the locked decisions. Phase task-breakdowns are instructions to an executing agent — they describe work already visible in the code, and at 45 files they dominated the documentation surface. Git history retains all of it, so nothing is lost, only unpublished.
+
+**Also fixed**: `tests/integration/test_parallel_fanout.py` and `test_dynamic_spawning.py` had fake synthesizer LLMs that answered both passes with the draft-report payload, left over from before the two-pass synthesizer landed. The second parse raised a `ValidationError` on the missing `verdict_reasoning`, so three tests failed on every CI run with or without API keys. Both fakes now script the two passes in call order, matching `tests/unit/test_synthesizer.py`. Suite is 148 passed / 3 skipped offline.
+
+**Alternatives considered**:
+- *Move the scaffolding to `ProjectDocs/archive/`* (rejected by the user — an archive folder still occupies the file tree and invites the reader to open it; git history is the better archive).
+- *Remove `CLAUDE.md` and `AGENTS.md` so the repo reads as plain software* (rejected by the user — for the audience this project targets, the agent operating contract is an asset).
+- *Leave the three failing integration tests* (rejected — a red CI badge is the first thing a reader sees, and the fix is test-only, touching no production code).
+
+**Reversibility**: Easy for everything removed — `git revert` restores the files verbatim. The test fixture fix should not be reverted; it corrects a real staleness bug.
