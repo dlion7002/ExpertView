@@ -33,6 +33,12 @@ checkpoints/
 *.ckpt
 *.safetensors
 
+# Local agent/tooling state (machine-specific paths, not shareable)
+.claude/settings.local.json
+
+# Deep code walkthrough drafts kept locally, not part of the published docs
+ProjectDocs/Guides/AppFlow/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db
