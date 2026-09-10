@@ -1,7 +1,7 @@
 [project]
 name = "expertview"
 version = "0.1.0"
-description = "Multi-agent root-cause-analysis system for industrial manufacturing incidents. LangGraph + multi-provider model split (NVIDIA NIM + Anthropic) + domain-specific RAG."
+description = "Multi-agent root-cause-analysis system for industrial manufacturing incidents. LangGraph + OpenRouter + domain-specific RAG."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
